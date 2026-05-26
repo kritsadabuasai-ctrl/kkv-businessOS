@@ -19,13 +19,12 @@ export class WfActionService {
   // =========================================================
   async create(companyId: number, userId: number, dto: CreateWfActionDto) {
 
-    // 🚨 1. เพิ่มโค้ดเรดาร์จับผิดตรงนี้เลยครับ! 🚨
+   // 🚨 1. เพิ่มโค้ดเรดาร์จับผิดตรงนี้เลยครับ! 🚨
     console.log(`\n=============================================`);
     console.log(`🚨 [DEBUG WORKFLOW] มีคนกดปุ่ม!`);
     console.log(`🚨 คำร้อง ID: ${dto.requestId} | Action ที่ส่งมาคือ: ${dto.action}`);
     console.log(`=============================================\n`);
 
-    
     const request = await this.prisma.wfRequest.findFirst({
       where: { id: dto.requestId, companyId },
       include: { currentNode: true, requester: true }
