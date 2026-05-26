@@ -1,0 +1,19 @@
+steps:
+  # Step 1: Build Docker Image
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['build', '-t', 'gcr.io/steel-time-485912-m1/kkv-backend', '.']
+
+  # Step 2: Push Image
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', 'gcr.io/steel-time-485912-m1/kkv-backend']
+
+  # Step 3: Deploy to Cloud Run
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: gcloud
+    args:
+      [
+        'run', 'deploy', 'kkv-backend', 
+        '--image', 'gcr.io/steel-time-485912-m1/kkv-backend',
+        '--region', 'asia-southeast3',
+        '--platform', 'managed'
+      ]
