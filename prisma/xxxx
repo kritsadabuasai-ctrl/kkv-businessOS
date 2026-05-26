@@ -1,0 +1,170 @@
+
+
+//await seedDefaultAiBots(prisma, compHQ.id);
+//await seedDefaultPolicies(prisma, compHQ.id);
+
+
+
+// =========================================================
+// 🤖 ฟังก์ชันสร้าง AI BOT เริ่มต้นสำหรับระบบ (Global Bots)
+// =========================================================
+async function seedDefaultAiBots(prisma: any, hqCompanyId: number) {
+  console.log('🤖 Seeding Default AI Bots...');
+
+  const defaultBots = [
+    {
+      code: 'PRODUCT_AUTO_TAG',
+      name: 'บอทวิเคราะห์รูปภาพ (Auto-Tag)',
+      description: 'บอทสำหรับวิเคราะห์รูปภาพสินค้าและสร้าง Tags ให้อัตโนมัติ (ทำงานผ่านระบบ Queue)',
+      provider: 'GOOGLE', 
+      // 🌟 หมายเหตุ: ฟิลด์ใน DB ชื่อ modelName แต่เราใช้เก็บค่า "รหัส" (modelCode) เพื่อให้ส่งหา API ได้
+      modelName: 'models/gemini-2.5-flash', 
+      temperature: 0.2, // ใช้ 0.2 (ค่อนข้างต่ำ) เพื่อให้ได้ Tags ที่แม่นยำ ตรงไปตรงมา ไม่มั่ว
+      systemPrompt: `คุณคือผู้เชี่ยวชาญด้าน E-commerce หน้าที่ของคุณคือวิเคราะห์รูปภาพสินค้าที่แนบมา และสร้างคำค้นหา (Tags) เพื่อเพิ่มยอดขาย\nกรุณาตอบกลับเป็นรูปแบบ JSON เท่านั้น โดยมีโครงสร้างดังนี้:\n{\n  "tags": ["ลักษณะลวดลาย", "สไตล์และอารมณ์", "สีพื้นของผ้า (Base Color)", "โทนสีของลวดลาย", "จุดเด่น"],\n  }\nห้ามพิมพ์ข้อความอื่นอธิบายเพิ่มเติม นอกเหนือจากรูปแบบ JSON เด็ดขาด`,
+      greetingMessage: 'พร้อมวิเคราะห์รูปภาพสินค้าแล้วครับ',
+      canUseTools: false,
+      isActive: true,
+      isSystem: true,
+    },
+    {
+      code: 'PRODUCT_SEARCH_BOT',
+      name: 'วิเคราะห์ความต้องการสินค้า',
+      description: 'แปลงความต้องการลูกค้าให้เป็น Tags เพื่อนำไปค้นหาสินค้า',
+      provider: 'GOOGLE', 
+      modelName: 'models/gemini-2.5-flash', 
+      temperature: 0.7, // ใช้ 0.7 เพื่อให้ AI มีความยืดหยุ่นในการตีความหมายจากภาษาคน
+      systemPrompt: `คุณคือผู้เชี่ยวชาญด้าน E-commerce หน้าที่ของคุณคือสกัด Keyword สำคัญจากความต้องการของลูกค้า เพื่อนำไปใช้ค้นหาในระบบ Tags ของรูปภาพสินค้า\nจงตอบกลับมาเป็น JSON Array ของคำสั้นๆ เท่านั้น ห้ามมีข้อความอื่น ตัวอย่าง: ["สีแดง", "ลายดอก", "ผ้าคอตตอน"]`,
+      greetingMessage: 'รับทราบ พิมพ์สิ่งที่ต้องการค้นหามาได้เลยครับ',
+      canUseTools: false,
+      isActive: true,
+      isSystem: true,
+    },
+    {
+      code: 'SOCIAL_COPYWRITER',
+      name: 'นักเขียนแคปชั่นโฆษณา (Copywriter)',
+      description: 'แต่งประโยคเชิญชวน โพสต์ขายของ สำหรับ Facebook และ LINE',
+      provider: 'GOOGLE', 
+      modelName: 'models/gemini-2.5-flash', 
+      temperature: 0.8, // ใช้ 0.8 เพื่อให้มีความคิดสร้างสรรค์ ภาษาสละสลวย
+      systemPrompt: `คุณคือนักการตลาดและนักเขียน Copywriter มือโปร หน้าที่ของคุณคือเขียนแคปชั่นขายสินค้าให้น่าสนใจ กระตุ้นให้อยากกดลิงก์\n\nกฎการเขียน:\n1. ใช้ภาษาเป็นกันเอง น่าตื่นเต้น มีการใช้อีโมจิ (Emoji) ให้น่าอ่าน\n2. เขียนให้เหมาะกับการโพสต์บน LINE OA หรือ Facebook\n3. จบประโยคด้วยการกระตุ้นให้คลิก (Call to Action)`,
+      greetingMessage: 'ส่งรายการสินค้าหรือโปรโมชั่นมาได้เลยครับ เดี๋ยวผมแต่งแคปชั่นให้',
+      canUseTools: false,
+      isActive: true,
+      isSystem: true,
+    },
+    {
+      code: 'PRODUCT_DESC_BOT',
+      name: 'สร้างคำบรรยายสินค้าอัตโนมัติ',
+      description: 'AI ช่วยเขียนคำบรรยายสินค้าจากชื่อรุ่นและสเปค ให้ดึงดูดใจและพร้อมขาย',
+      provider: 'GOOGLE', 
+      modelName: 'models/gemini-2.5-flash', 
+      temperature: 0.7, // 0.7 เหมาะสมครับ ให้ AI มีความสละสลวยในการเลือกใช้คำโฆษณา
+      systemPrompt: `คุณคือ Copywriter มืออาชีพด้าน E-commerce หน้าที่ของคุณคือเขียน "คำอธิบายสินค้า" ให้น่าสนใจ อ่านง่าย และกระตุ้นการตัดสินใจซื้อ โดยอ้างอิงจาก "ชื่อสินค้า" ที่ได้รับ\n\nโครงสร้างบังคับ:\n1. พาดหัวหลักให้น่าสนใจ (ใช้อีโมจิ 1-2 ตัว)\n2. เกริ่นนำสั้นๆ ถึงปัญหาที่ช่วยแก้ หรือความเท่/ประโยชน์ที่ได้\n3. จุดเด่นสินค้า (Bullet points สั้นๆ 3-5 ข้อ พร้อมอีโมจินำหน้า)\n4. ประโยคสรุปกระตุ้นการซื้อ\n\nกฎ: ตอบกลับเฉพาะเนื้อหาคำบรรยายเท่านั้น ห้ามพิมพ์คำอธิบาย แนะนำตัว หรือคำลงท้ายใดๆ นอกเหนือจากเนื้อหาสินค้า`,
+      greetingMessage: 'ระบบสร้างคำบรรยายพร้อมแล้วครับ ส่งชื่อสินค้ามาได้เลย',
+      canUseTools: false,
+      isActive: true,
+      isSystem: true,
+    }
+  ];
+
+  for (const bot of defaultBots) {
+    // 🔍 1. หาบอทที่เป็นของ HQ
+    const existingBot = await prisma.intAiBot.findFirst({
+      where: { 
+        code: bot.code,
+        companyId: hqCompanyId // 🌟 ผูกกับบริษัทแม่ (HQ)
+      }
+    });
+
+    if (existingBot) {
+      // 📝 2. ถ้ามีแล้วให้อัปเดต
+      await prisma.intAiBot.update({
+        where: { id: existingBot.id },
+        data: bot
+      });
+    } else {
+      // ✨ 3. ถ้ายังไม่มีให้สร้างใหม่
+      await prisma.intAiBot.create({
+        data: {
+          ...bot,
+          companyId: hqCompanyId, // 🌟 ผูกกับบริษัทแม่ (HQ)
+        }
+      });
+    }
+  }
+  console.log(`✅ Default AI Bots seeded! (${defaultBots.length} bots)`);
+}
+
+// =========================================================
+// 📜 ฟังก์ชันสร้างนโยบายมาตรฐาน (Privacy Policy & Terms)
+// =========================================================
+async function seedDefaultPolicies(prisma: any, hqCompanyId: number) {
+  console.log('📜 Seeding Default Privacy Policy & Terms...');
+
+  const policies = [
+    {
+      slug: 'privacy-policy',
+      title: 'นโยบายความเป็นส่วนตัว (Privacy Policy)',
+      content: {
+        lastUpdated: new Date().toISOString(),
+        sections: [
+          {
+            title: "1. ข้อมูลที่เราจัดเก็บ",
+            body: "เราเก็บรวบรวมข้อมูลที่จำเป็นเพื่อการยืนยันตัวตน ได้แก่ ชื่อ (Display Name), อีเมล (Email) และรูปโปรไฟล์ ผ่านบริการ Social Login (Google, Facebook, LINE)"
+          },
+          {
+            title: "2. วัตถุประสงค์การใช้งาน",
+            body: "เพื่อใช้ในการเข้าสู่ระบบ และจัดการสิทธิ์การเข้าถึงข้อมูลภายในบริษัท (Multi-tenant) ของท่านอย่างปลอดภัย"
+          },
+          {
+            title: "3. การรักษาความปลอดภัย",
+            body: "ข้อมูลของท่านจะถูกจัดเก็บในระบบ Cloud ที่มีมาตรฐานความปลอดภัยสูง และจะไม่มีการเปิดเผยข้อมูลส่วนบุคคลให้แก่บุคคลภายนอกโดยไม่ได้รับอนุญาต"
+          },
+          {
+            title: "4. การขอลบข้อมูล",
+            body: "ผู้ใช้งานสามารถแจ้งขอลบข้อมูลบัญชีและข้อมูลส่วนบุคคลได้ทุกเมื่อผ่านเมนู 'ตั้งค่าโปรไฟล์' หรือติดต่อผู้ดูแลระบบ"
+          }
+        ]
+      }
+    },
+    {
+      slug: 'terms-of-service',
+      title: 'ข้อกำหนดและเงื่อนไขการใช้งาน (Terms of Service)',
+      content: {
+        lastUpdated: new Date().toISOString(),
+        sections: [
+          {
+            title: "1. การใช้งานระบบ",
+            body: "ผู้ใช้ตกลงที่จะใช้งานระบบภายใต้กฎระเบียบของบริษัทและไม่กระทำการใดๆ ที่ส่งผลเสียต่อความมั่นคงของระบบ"
+          },
+          {
+            title: "2. ความรับผิดชอบต่อบัญชี",
+            body: "ผู้ใช้ต้องรักษาความลับของบัญชีผู้ใช้และรับผิดชอบต่อกิจกรรมที่เกิดขึ้นภายใต้บัญชีของตน"
+          }
+        ]
+      }
+    }
+  ];
+
+  for (const policy of policies) {
+    await prisma.cmsPage.upsert({
+      where: {
+        companyId_slug: {
+          companyId: hqCompanyId, // 🌟 เปลี่ยนมาใช้ตัวแปรพารามิเตอร์
+          slug: policy.slug
+        }
+      },
+      update: {
+        title: policy.title,
+        content: policy.content as any, // บันทึกลงฟิลด์ Json
+      },
+      create: {
+        companyId: hqCompanyId, // 🌟 เปลี่ยนมาใช้ตัวแปรพารามิเตอร์
+        slug: policy.slug,
+        title: policy.title,
+        content: policy.content as any,
+      }
+    });
+  }
+  console.log(`✅ Default Policies seeded for HQ! (${policies.length} pages)`);
+}

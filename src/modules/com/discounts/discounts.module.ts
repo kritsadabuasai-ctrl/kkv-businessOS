@@ -1,0 +1,13 @@
+import { Module } from '@nestjs/common';
+import { DiscountsService } from './discounts.service';
+import { DiscountsController } from './discounts.controller';
+import { PrismaModule } from '../../../prisma/prisma.module';
+
+
+@Module({
+  imports: [PrismaModule],
+  controllers: [DiscountsController],
+  providers: [DiscountsService],
+  exports: [DiscountsService], // Export เผื่อ Module Order/Checkout เอาไปใช้คำนวณราคา
+})
+export class DiscountsModule {}

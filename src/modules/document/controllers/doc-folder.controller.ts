@@ -1,0 +1,94 @@
+import { Controller, Post, Get, Put, Delete, Body, Param, ParseIntPipe, UseGuards, Req ,Patch } from '@nestjs/common';
+import { ApiTags, ApiBearerAuth, ApiOperation } from '@nestjs/swagger';
+import { DocFolderService } from '../services/doc-folder.service';
+import { CreateFolderDto } from '../dto/create-folder.dto';
+import { JwtAuthGuard } from '../../sec/auth/jwt-auth.guard';
+import { PermissionsGuard } from '../../sec/auth/permissions.guard';
+import { RequirePermissions } from '../../sec/auth/permissions.decorator';
+import { SubscriptionGuard } from  '../../sec/auth/subscription.guard'  
+import { UpdateFolderDto } from '../dto/update-folder.dto';
+
+@ApiTags('Document Folder')
+@ApiBearerAuth() 
+@UseGuards(JwtAuthGuard, PermissionsGuard, SubscriptionGuard) 
+@Controller('doc-folder')
+export class DocFolderController {
+  constructor(private readonly folderService: DocFolderService) {}
+
+  @ApiOperation({ summary: 'สร้างแฟ้มข้อมูลใหม่' })
+  @RequirePermissions('document:create') 
+  @Post()
+  create(@Body() dto: CreateFolderDto, @Req() req: any) {
+    // 🛡️ โยน companyId จาก Token ให้ Service จัดการตรงๆ
+    return this.folderService.createFolder(req.user.companyId, dto);
+  }
+
+  @ApiOperation({ summary: 'ดึงโครงสร้างแฟ้มข้อมูลทั้งหมด (Tree)' })
+  @RequirePermissions('document:view')
+  @Get('tree')
+  getTree(@Req() req: any) {
+    const companyId = req.user.companyId;
+    const roleId = req.user.roleId; 
+    const isHQ = req.user.isHQ || false;
+    const userId = req.user.id || req.user.userId; // 🌟 ดึง userId จาก Token
+    
+    // ส่งพารามิเตอร์ 4 ตัวตามลำดับ
+    return this.folderService.getFolderTree(companyId, roleId, isHQ, userId);
+  }
+
+ @ApiOperation({ summary: 'แก้ไขข้อมูลแฟ้ม' })
+  @RequirePermissions('document:edit') // หรือตามสิทธิ์ที่คุณตั้งไว้
+  @Patch(':id')
+  updateFolder(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: UpdateFolderDto,
+    @Req() req: any
+  ) {
+    // 1. ดึง userId ออกมาจาก Token (req.user)
+    const userId = req.user?.id || req.user?.userId;
+    
+    // 2. ส่ง Arguments ไป 4 ตัวให้ครบตามที่ Service ต้องการ
+    // (companyId, folderId, userId, dto)
+    return this.folderService.updateFolder(req.user?.companyId, id, userId, dto);
+  }
+
+  // ==========================================
+  // 🌟 จุดที่แก้ไข: เปลี่ยนจาก roles เป็น rules 
+  // ==========================================
+  @ApiOperation({ summary: 'อัปเดตสิทธิ์การเข้าถึงแฟ้ม' })
+  @RequirePermissions('document:update')
+  @Put(':id/access')
+  updateAccess(
+    @Param('id', ParseIntPipe) id: number,
+    @Body('rules') rules: any[], // 🌟 เปลี่ยนตรงนี้เพื่อรับค่าจากหน้าบ้าน
+    @Req() req: any
+  ) {
+    return this.folderService.updateFolderAccess(req.user.companyId, id, rules); // 🌟 ส่งตัวแปรเข้าไปใน Service
+  }
+
+  @ApiOperation({ summary: 'ย้ายโฟลเดอร์ไปยังตำแหน่งใหม่' })
+  @RequirePermissions('document:update') // เช็กสิทธิ์ว่ามีสิทธิ์แก้ไขเอกสารหรือไม่
+  @Put(':id/move')
+  moveFolder(
+    @Param('id', ParseIntPipe) id: number,
+    @Body('newParentId') newParentId: number | null, // รับเป็น null ถ้าย้ายออกมาเป็นแฟ้มหลัก (Root)
+    @Req() req: any
+  ) {
+    return this.folderService.moveFolder(req.user.companyId, id, newParentId);
+  }
+
+  @ApiOperation({ summary: 'ลบแฟ้มข้อมูล' })
+  @RequirePermissions('document:delete')
+  @Delete(':id')
+  deleteFolder(
+    @Param('id', ParseIntPipe) id: number,
+    @Req() req: any
+  ) {
+    const userId = req.user?.id || req.user?.userId; 
+    // 🌟 ดึง roleId จาก Token ตรงๆ
+    const roleId = Number(req.user?.roleId || 0); 
+    
+    // ส่ง roleId เป็น Parameter ตัวที่ 4
+    return this.folderService.deleteFolder(req.user?.companyId, id, userId, roleId);
+  }
+}

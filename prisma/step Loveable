@@ -1,0 +1,17 @@
+The Login is working now! I can access the dashboard as 'admin_hq'.
+
+However, the Sidebar Menu is incorrect. It seems to be hardcoded.
+Please update the Sidebar logic to fetch the dynamic menu from the backend instead.
+
+**Backend Logic:**
+1. When I call `GET /auth/profile` (with Bearer Token), the backend returns the user's profile including their allowed menus.
+   - The response looks like: `{ id: 1, username: 'admin_hq', ..., roles: [ { menus: [ { id: 1, name: 'Dashboard', path: '/dashboard', icon: 'LayoutDashboard' }, ... ] } ] }`
+   
+**Action Required:**
+1. Modify the `AppSidebar` (or Layout component).
+2. Fetch the user profile from `/auth/profile` on mount.
+3. Extract the `menus` list from the response.
+4. Render the Sidebar items dynamically based on this list.
+   - Map the backend `icon` string (e.g., "Users", "ShoppingCart") to actual Lucide React Icons.
+   
+Please ensure that if the API call fails or is loading, show a loading skeleton or a default fallback menu.
