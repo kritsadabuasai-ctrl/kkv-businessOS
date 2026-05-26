@@ -17,3 +17,7 @@ steps:
         '--region', 'asia-southeast3',
         '--platform', 'managed'
       ]
+
+# 🌟 เพิ่ม 2 บรรทัดนี้ที่ล่างสุด เพื่อแก้ Error เรื่อง Logs
+options:
+  logging: CLOUD_LOGGING_ONLY
