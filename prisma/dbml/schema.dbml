@@ -251,6 +251,7 @@ Table org_companies {
   hrkpiplandocument hr_kpi_plan_documents [not null]
   hrkpiEvidence hr_kpi_evidences [not null]
   redemptionDocument crm_redemption_documents [not null]
+  logDocumentTraces log_document_trace [not null]
   purchaseDoc ecom_purchase_documents [not null, note: '✅ Back-relations สำหรับ E-commerce']
   paymentSlip ecom_payment_slips [not null]
   shippingDoc ecom_shipping_documents [not null]
@@ -534,7 +535,7 @@ Table int_shopee_shops {
   externalConnection int_external_connections
   shopId String [unique, not null, note: '🏪 ข้อมูลร้านค้า']
   shopName String
-  accessToken String [not null, note: '🔑 โทเค็น (ลบ Partner ID/Key ออก เพราะไปอยู่ใน .env)']
+  accessToken String [not null, note: '🔑 โทเค็น (ลบ Partner ID/Key ออก เพราะไปอยู��ใน .env)']
   refreshToken String
   accessTokenExpiresAt DateTime
   refreshTokenExpiresAt DateTime
@@ -670,6 +671,7 @@ Table sec_users {
   docAccessRequests doc_access_requests [not null]
   docFolderAccesses doc_folder_access [not null]
   docFileAccesses doc_file_access [not null]
+  logDocumentTraces log_document_trace [not null]
   reportedIncidents hr_disciplinary_incidents [not null]
   approvedPenalties hr_disciplinary_actions [not null]
   adhocInvites wf_actions [not null, note: 'ประวัติการเชิญคนนอกเข้ามาช่วยพิจารณางานใน Workflow']
@@ -1314,7 +1316,7 @@ Table wf_actions {
   stepName String [not null, note: 'ชื่อขั้นตอนในขณะที่กดดำเนินการ (คัดลอกมาจาก nodeName ของ WfNode ณ ขณะนั้น)']
   action String [not null, note: 'ประเภทการตัดสินใจ เช่น APPROVE, REJECT, SEND_BACK, หรือ CANCEL']
   isAdhoc Boolean [not null, default: false, note: 'ระบุว่าเป็นงานที่ถูกเชิญเข้ามาชั่วคราว (ไม่ได้อยู่ใน Flow ปกติ)']
-  invitedById Int [note: 'รหัสคนที่กดเชิญเข้ามา (เพื่อให้รู้ว่าใครเป็นคนลากคนนอกเข้ามา)']
+  invitedById Int [note: 'รหัสคนที่กดเชิญเข้ามา (เพื่อให้รู้ว่าใครเป็นคนลากคนนอกเข้า���า)']
   invitedBy sec_users
   comment String [note: 'หมายเหตุหรือเหตุผลประกอบการตัดสินใจจากผู้ดำเนินการ']
   createdAt DateTime [default: `now()`, not null, note: 'วันและเวลาที่เกิดกิจกรรมการตัดสินใจนี้ขึ้น (Default: ปัจจุบัน)']
@@ -1323,7 +1325,7 @@ Table wf_actions {
 }
 
 Table log_audits {
-  id BigInt [pk, increment, note: 'รหัสลำ���ับหลักของ Log (Primary Key) ใช้ BigInt เพื่อรองรับปริมาณบันทึกมหาศาล']
+  id BigInt [pk, increment, note: 'รหัสลำดับหลักของ Log (Primary Key) ใช้ BigInt เพื่อรองรับปริมาณบันทึกมหาศาล']
   companyId Int [not null, note: 'รหัสอ้างอิงไปยังบริษัท (OrgCompany) เพื่อแยกประวัติการตรวจสอบตามองค์กร']
   company org_companies [not null]
   action String [not null, note: 'ประเภทของกิจกรรมที่เกิดขึ้น เช่น CREATE, UPDATE, DELETE']
@@ -1598,7 +1600,7 @@ Table com_product_images {
 
 Table int_ai_batch_jobs {
   id Int [pk, increment, note: 'รหัสลำดับคิวงาน (รันอัตโนมัติ)']
-  companyId Int [not null, note: 'รหัสบริษัทที่เป็นเจ้าของคิวงานนี้ (เพื่อแยกบิ���ค่าใช้จ่าย AI และความปลอดภัยของข้อมูล)']
+  companyId Int [not null, note: 'รหัสบริษัทที่เป็นเจ้าของคิวงานนี้ (เพื่อแยกบิลค่าใช้จ่าย AI และความปลอดภัยของข้อมูล)']
   company org_companies [not null, note: 'ข้อมูลบริษัทที่เกี่ยวข้อง (ลบอัตโนมัติหากบริษัทถูกลบ)']
   jobType String [not null, default: 'IMAGE_TAGGING', note: 'ประเภทของงานที่สั่งให้ AI ทำ เช่น IMAGE_TAGGING (แท็กรูปภาพอัตโนมัติ), TEXT_SUMMARY (สรุปข้อความ), DATA_EXTRACTION (ดึงข้อมูลจากไฟล์เอกสาร)']
   status WorkflowStatus [not null, default: 'IN_PROGRESS', note: 'สถานะปัจจุบันของงาน (อ้างอิงจาก Enum WorkflowStatus) เช่น IN_PROGRESS (กำลังทำงาน), COMPLETED (เสร็จสมบูรณ์), FAILED (ล้มเหลว)']
@@ -1871,7 +1873,7 @@ Table com_payments {
   method com_payment_methods [not null]
   amount Decimal [not null, note: 'ยอดเงินที่ลูกค้าระบุว่าชำระเข้ามาจริง']
   transferredAt DateTime [default: `now()`, not null, note: 'วันและเวลาที่ลูกค้าแจ้งว่าได้ทำการโอนเงิน']
-  slipUrl String [note: 'ที่อยู่ไฟล์รูปภาพหลักฐานการโอน���งิน (Slip) ที่ลูกค้าอัปโหลด']
+  slipUrl String [note: 'ที่อยู่ไฟล์รูปภาพหลักฐานการโอนเงิน (Slip) ที่ลูกค้าอัปโหลด']
   refNo String [note: 'หมายเลขอ้างอิงการทำรายการจากธนาคารหรือระบบชำระเงินภายนอก']
   status String [not null, default: 'PENDING', note: 'สถานะของรายการชำระเงินนี้ เช่น PENDING (รอนุมัติ), SUCCESS (ยืนยันแล้ว), หรือ REJECTED']
   verifiedBy Int [note: 'รหัสผู้ใช้งาน (แอดมิน) ที่เป็นคนตรวจสอบรายการนี้']
@@ -2458,7 +2460,7 @@ Table cms_pages {
   slug String [not null, note: 'URL ของหน้านั้นๆ เช่น "about-us", "promotion"']
   title String [note: 'ชื่อหน้า (ไว้แสดงในรายการหลังบ้าน)']
   content Json [note: '🔥 หัวใจสำคัญ: เก็บ JSON Layout ที่ได้จาก Lovable/Puck']
-  seoTitle String [note: 'ข้อมูลสำหรั���การทำ Search Engine Optimization เพื่อให้หน้าเว็บติดอันดับการค้นหาบน Google ได้ดีขึ้น และแสดงรูปภาพพรีวิวที่สวยงามเวลาแชร์ลงโซเชียล']
+  seoTitle String [note: 'ข้อมูลสำหรับการทำ Search Engine Optimization เพื่อให้หน้าเว็บติดอันดับการค้นหาบน Google ได้ดีขึ้น และแสดงรูปภาพพรีวิวที่สวยงามเวลาแชร์ลงโซเชียล']
   seoDescription String [note: 'ข้อมูลสำหรับการทำ Search Engine Optimization เพื่อให้หน้าเว็บติดอันดับการค้นหาบน Google ได้ดีขึ้น และแสดงรูปภาพพรีวิวที่สวยงามเวลาแชร์ลงโซเชียล']
   seoImage String [note: 'ข้อมูลสำหรับการทำ Search Engine Optimization เพื่อให้หน้าเว็บติดอันดับการค้นหาบน Google ได้ดีขึ้น และแสดงรูปภาพพรีวิวที่สวยงามเวลาแชร์ลงโซเชียล']
   isPublished Boolean [not null, default: false, note: 'สถานะการเผยแพร่หน้าเว็บ (True = ออนไลน์ให้คนทั่วไปเห็น, False = ฉบับร่างที่เห็นเฉพาะหลังบ้าน)']
@@ -3481,6 +3483,7 @@ Table doc_files {
   sourceArchiveId Int
   sourceArchive doc_files
   extractedFiles doc_files [not null]
+  logDocumentTraces log_document_trace [not null]
   uploadedById Int [not null]
   uploadedBy sec_users [not null]
   filePassword String [note: 'ถ้ามี password ก่อนเข้าดู']
@@ -4054,7 +4057,7 @@ Table hr_welfare_requests {
   createdAt DateTime [default: `now()`, not null]
   updatedAt DateTime [not null]
 
-  Note: '📝 3. Transaction: การทำเรื่องเบิกส��ัสดิการ (ปรับปรุง)'
+  Note: '📝 3. Transaction: การทำเรื่องเบิกสวัสดิการ (ปรับปรุง)'
 }
 
 Table hr_welfare_request_documents {
@@ -4629,6 +4632,20 @@ Table int_marketplace_products {
   }
 
   Note: 'ตารางพักข้อมูลสินค้าจากมาร์เก็ตเพลสภายนอก (Marketplace Product Cache)'
+}
+
+Table log_document_trace {
+  id Int [pk, increment]
+  companyId Int [not null]
+  fileHash String [unique, not null, note: 'รหัส SHA-256 ของไฟล์']
+  originalFileId Int [not null]
+  downloadedById Int [not null, note: 'ใครเป็นคนกดโหลด/ดูไฟล์นี้']
+  downloadedAt DateTime [default: `now()`, not null]
+  company org_companies [not null]
+  originalFile doc_files [not null]
+  downloadedBy sec_users [not null]
+
+  Note: 'ตารางเก็บบันทึกลายนิ้วมือดิจิทัลของไฟล์ที่ถูกส่งออก (Tamper-Proof Trace)'
 }
 
 Table ComProductImageToComTag {
@@ -6091,3 +6108,9 @@ Ref: int_product_mappings.productId > com_products.id [delete: Cascade]
 Ref: int_product_mappings.marketplaceProductId > int_marketplace_products.id [delete: Cascade]
 
 Ref: int_marketplace_products.companyId > org_companies.id [delete: Cascade]
+
+Ref: log_document_trace.companyId > org_companies.id [delete: Cascade]
+
+Ref: log_document_trace.originalFileId > doc_files.id [delete: Cascade]
+
+Ref: log_document_trace.downloadedById > sec_users.id [delete: Cascade]

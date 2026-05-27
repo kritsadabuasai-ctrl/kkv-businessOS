@@ -2639,6 +2639,14 @@ erDiagram
   DateTime createdAt
   DateTime updatedAt
 }
+"log_document_trace" {
+  Int id PK
+  Int companyId FK
+  String fileHash UK
+  Int originalFileId FK
+  Int downloadedById FK
+  DateTime downloadedAt
+}
 "_HrDepartmentToHrEmployee" {
   String A FK
   String B FK
@@ -3166,6 +3174,9 @@ erDiagram
 "int_product_mappings" }o--|| "com_products" : product
 "int_product_mappings" }o--o| "int_marketplace_products" : marketplaceProduct
 "int_marketplace_products" }o--|| "org_companies" : company
+"log_document_trace" }o--|| "org_companies" : company
+"log_document_trace" }o--|| "doc_files" : originalFile
+"log_document_trace" }o--|| "sec_users" : downloadedBy
 "_HrDepartmentToHrEmployee" }o--|| "hr_departments" : HrDepartment
 "_HrDepartmentToHrEmployee" }o--|| "hr_employees" : HrEmployee
 "_ComProductImageToComTag" }o--|| "com_product_images" : ComProductImage
@@ -6857,6 +6868,19 @@ Properties as follows:
 - `imageUrl`: 🖼️ ลิงก์รูปภาพ (ตอนแรกเป็น URL ของ Shopee พอโหลดเสร็จจะเปลี่ยนเป็น GCS URL ของเรา)
 - `createdAt`:
 - `updatedAt`:
+
+### `log_document_trace`
+
+ตารางเก็บบันทึกลายนิ้วมือดิจิทัลของไฟล์ที่ถูกส่งออก (Tamper-Proof Trace)
+
+Properties as follows:
+
+- `id`:
+- `companyId`:
+- `fileHash`: รหัส SHA-256 ของไฟล์
+- `originalFileId`:
+- `downloadedById`: ใครเป็นคนกดโหลด/ดูไฟล์นี้
+- `downloadedAt`:
 
 ### `_HrDepartmentToHrEmployee`
 

@@ -415,6 +415,7 @@ model OrgCompany {
   hrkpiplandocument             HrKpiPlanDocument[]
   hrkpiEvidence                 HrKpiEvidence[]
   redemptionDocument            CrmRedemptionDocument[]
+  logDocumentTraces             LogDocumentTrace[]
 
   /// ✅ Back-relations สำหรับ E-commerce
   purchaseDoc               EcomPurchaseDocument[]
@@ -1157,6 +1158,7 @@ model SecUser {
   docAccessRequests DocAccessRequest[] @relation("AccessRequester")
   docFolderAccesses DocFolderAccess[]
   docFileAccesses   DocFileAccess[]
+  logDocumentTraces LogDocumentTrace[] @relation("DownloadedByTrace")
 
   reportedIncidents HrDisciplinaryIncident[] @relation("IncidentReporter")
   approvedPenalties HrDisciplinaryAction[]   @relation("PenaltyApprover")
@@ -5967,6 +5969,8 @@ model DocFile {
   sourceArchiveId Int?
   sourceArchive   DocFile?   @relation("ArchiveToFiles", fields: [sourceArchiveId], references: [id], onDelete: SetNull)
   extractedFiles  DocFile[]  @relation("ArchiveToFiles")
+
+  logDocumentTraces LogDocumentTrace[]
   
   uploadedById  Int
   uploadedBy    SecUser        @relation(fields: [uploadedById], references: [id])
@@ -7903,4 +7907,26 @@ model IntMarketplaceProduct {
 
   @@unique([companyId, platform, storeAccountId, externalProductId])
   @@map("int_marketplace_products")
+}
+
+/// ตารางเก็บบันทึกลายนิ้วมือดิจิทัลของไฟล์ที่ถูกส่งออก (Tamper-Proof Trace)
+model LogDocumentTrace {
+  id              Int      @id @default(autoincrement())
+  companyId       Int
+  
+  /// รหัส SHA-256 ของไฟล์
+  fileHash        String   @unique 
+  originalFileId  Int
+  
+  /// ใครเป็นคนกดโหลด/ดูไฟล์นี้
+  downloadedById  Int
+  downloadedAt    DateTime @default(now())
+
+  // Relations
+  company         OrgCompany @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  originalFile    DocFile    @relation(fields: [originalFileId], references: [id], onDelete: Cascade)
+  downloadedBy    SecUser    @relation("DownloadedByTrace", fields: [downloadedById], references: [id], onDelete: Cascade)
+
+  @@index([companyId, fileHash])
+  @@map("log_document_trace")
 }
