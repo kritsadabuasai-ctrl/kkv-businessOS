@@ -236,44 +236,24 @@ export class WfRequestService {
     return request;
   }
 
-  // =========================================================
-  // 4. ระบบ Routing อัจฉริยะ (ทะลวงผ่าน CONDITION และ FYI อัตโนมัติ)
+// =========================================================
+  // 4. ระบบ Routing อัจฉริยะ (แก้ไขบั๊กทะลวงโหนด FYI ทิ้ง)
   // =========================================================
   async processNextNodeRouting(requestId: number, targetNode: any, requesterUserId: number, companyId: number, requestData: any, allNodes: any[]) {
     let currentNode = targetNode;
     
-    while (currentNode && (currentNode.nodeType === 'CONDITION' || currentNode.nodeType === 'FYI')) {
+    while (currentNode && currentNode.nodeType === 'CONDITION') {
       await this.prisma.wfRequest.update({ where: { id: requestId }, data: { currentNodeId: currentNode.id } });
 
-      if (currentNode.nodeType === 'CONDITION') {
-        const isPassed = this.evaluateCondition(currentNode.conditionLogic, requestData);
-        const nextNodeId = isPassed ? currentNode.nextApproveId : currentNode.nextRejectId;
-        currentNode = nextNodeId ? allNodes.find((n: any) => n.id === nextNodeId) : null;
-      }
-      else if (currentNode.nodeType === 'FYI') {
-        const rawApproverIds = await this.getApproversForNode(currentNode, requesterUserId, companyId);
-        const uniqueUserIds = [...new Set(rawApproverIds.map(id => Number(id)))];
-
-        if (uniqueUserIds.length > 0) {
-          await this.prisma.wfAction.createMany({
-            data: uniqueUserIds.map(uid => ({
-              requestId,
-              actorId: uid,
-              stepName: currentNode.nodeName || `แจ้งทราบ`,
-              action: 'APPROVE', 
-              comment: 'System Auto-Skip: ระบบได้ส่งเรื่องแจ้งให้ทราบ (FYI) เรียบร้อยแล้ว'
-            }))
-          });
-        }
-        console.log(`[Workflow] ⏭️ Auto-Skip FYI Node for Request: ${requestId}`);
-        
-        const nextNodeId = currentNode.nextApproveId;
-        currentNode = nextNodeId ? allNodes.find((n: any) => n.id === nextNodeId) : null;
-      }
+      const isPassed = this.evaluateCondition(currentNode.conditionLogic, requestData);
+      const nextNodeId = isPassed ? currentNode.nextApproveId : currentNode.nextRejectId;
+      currentNode = nextNodeId ? allNodes.find((n: any) => n.id === nextNodeId) : null;
     }
 
     if (currentNode) {
       await this.prisma.wfRequest.update({ where: { id: requestId }, data: { currentNodeId: currentNode.id } });
+      
+      // 🌟 โยนไปให้ assignApprovers จัดการต่อว่าจะแจกงานหรือ Auto-Approve เฉพาะคน
       await this.assignApprovers(requestId, currentNode, requesterUserId, companyId, requestData, allNodes);
     } else {
       await this.markAsApproved(requestId);
@@ -319,7 +299,7 @@ export class WfRequestService {
   
 
 // =========================================================
-  // ฟังก์ชันแจกงาน: assignApprovers (ป้องกัน Auto-Approve ตอนตีกลับ)
+  // ฟังก์ชันแจกงาน: assignApprovers (ปรับปรุงให้โหนด FYI ผ่านอัตโนมัติ)
   // =========================================================
   async assignApprovers(
     requestId: number, 
@@ -333,9 +313,32 @@ export class WfRequestService {
     const reqUserId = Number(requesterUserId);
     const cId = Number(companyId);
     
+    // ดึงคนที่มีสิทธิ์ในโหนดนี้ทั้งหมด
     const rawApproverIds = await this.getApproversForNode(node, reqUserId, cId);
     const uniqueUserIds = [...new Set(rawApproverIds.map(id => Number(id)))];
 
+    // 🌟 1. กรณีเป็นโหนด FYI (แจ้งเพื่อทราบ)
+    if (node.nodeType === 'FYI') {
+      // บันทึก Log ว่า "รับทราบแล้ว (Auto-Acknowledged)" แทนที่จะให้คนไปกด
+      if (uniqueUserIds.length > 0) {
+        await this.prisma.wfAction.createMany({
+          data: uniqueUserIds.map(uid => ({
+            requestId,
+            actorId: uid,
+            stepName: node.nodeName || `แจ้งทราบ`,
+            action: 'APPROVE', // บันทึกเป็น Approve เพื่อให้จบโหนด
+            comment: 'System Auto: รับทราบข้อมูลเรียบร้อยแล้ว'
+          }))
+        });
+      }
+      
+      // ทะลุผ่านโหนด FYI ไปยังโหนดถัดไปทันทีโดยไม่ต้องรอใครกด
+      const nextNodeId = node.nextApproveId;
+      const nextNode = nextNodeId ? allNodes.find((n: any) => n.id === nextNodeId) : null;
+      return this.processNextNodeRouting(requestId, nextNode, reqUserId, cId, requestData, allNodes);
+    }
+
+    // 🌟 2. กรณีเป็นโหนดอนุมัติปกติ (APPROVAL)
     const isRequesterInvolved = uniqueUserIds.includes(reqUserId);
     const shouldAutoApprove = !isSendBack && isRequesterInvolved && !node.requireSignature;
 
@@ -343,6 +346,7 @@ export class WfRequestService {
       ? uniqueUserIds.filter(id => id !== reqUserId) 
       : uniqueUserIds;
 
+    // แจกกล่อง PENDING ให้คนที่ต้องรอตัดสินใจ
     if (pendingUserIds.length > 0) {
       await this.prisma.wfAction.createMany({
         data: pendingUserIds.map(uid => ({
@@ -356,8 +360,6 @@ export class WfRequestService {
     }
 
     if (shouldAutoApprove) {
-      console.log(`[Workflow] ⚡ Auto-Approve สำหรับผู้ขอเรื่อง: ${reqUserId}`);
-      
       await this.prisma.wfAction.create({
         data: {
           requestId,
@@ -368,18 +370,10 @@ export class WfRequestService {
         }
       });
 
-      if (node.voteRule === 'ALL_MUST_APPROVE' && uniqueUserIds.length > 1) {
-        return; 
-      }
-
-      if (pendingUserIds.length > 0) {
-          await this.prisma.wfAction.updateMany({
-            where: { requestId, action: 'PENDING', actorId: { in: pendingUserIds }, stepName: node.nodeName || `ขั้นตอนที่ ${node.stepOrder}` },
-            data: { action: 'CANCELLED', comment: 'ถูกยกเลิกเนื่องจากได้รับการอนุมัติอัตโนมัติไปแล้ว' }
-          });
-      }
-
-      return this.processNextNodeRouting(requestId, node, reqUserId, cId, requestData, allNodes);
+      // ถ้าเป็น ANY_APPROVE หรือเงื่อนไขที่อนุมัติได้ทันที ให้ทะลุโหนด
+      const nextNodeId = node.nextApproveId;
+      const nextNode = nextNodeId ? allNodes.find((n: any) => n.id === nextNodeId) : null;
+      return this.processNextNodeRouting(requestId, nextNode, reqUserId, cId, requestData, allNodes);
     }
   }
 
