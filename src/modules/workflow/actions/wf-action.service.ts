@@ -251,7 +251,7 @@ export class WfActionService {
             }
          });
       } 
-      // 🌟 เคสที่ 2: ถอยหลังไปโหนดก่อนหน้า (สร้าง PENDING ตรงๆ ไม่ผ่าน assignApprovers)
+      // 🌟 เคสที่ 2: ถอยหลังไปโหนดก่อนหน้า (เรียกใช้ assignApprovers เพื่อดัก Auto-Approve)
       else {
          const targetNode = allNodes.find(n => n.id === previousNodeId);
 
@@ -260,32 +260,21 @@ export class WfActionService {
            data: { currentNodeId: previousNodeId, status: WorkflowStatus.IN_PROGRESS } 
          });
 
-         // ค้นหาว่าใครมีสิทธิ์ในโหนดเป้าหมายบ้าง
-         const rawApproverIds = await (this.wfRequestService as any).getApproversForNode(targetNode, request.requesterId, companyId);
-         const uniqueUserIds = [...new Set(rawApproverIds)];
-         
-         // 🎯 สั่งแจกกล่อง PENDING ให้รายคนเลย เพื่อเลี่ยงลอจิก Auto-Approve ในไฟล์ Request
-        if (uniqueUserIds.length > 0) {
-            await this.prisma.wfAction.createMany({
-               // 🌟 แก้ไขตรงนี้: ใช้ (uid: any) เพื่อหยุด Error TS2345
-               data: uniqueUserIds.map((uid: any) => ({
-                  requestId: request.id,
-                  actorId: Number(uid), // 🌟 บังคับแปลงเป็นตัวเลขตรงนี้แทน
-                  stepName: targetNode?.nodeName || `ขั้นตอนที่ ${targetNode?.stepOrder || 'ก่อนหน้า'}`,
-                  action: 'PENDING',
-                  comment: 'ตีกลับ: กรุณาแก้ไขข้อมูลและพิจารณาอนุมัติอีกครั้ง'
-               }))
-            });
-         } else {
-            // Fallback ถ้าระบบหาผู้อนุมัติไม่เจอ ให้โยนกลับหาผู้ขอ
-            await this.prisma.wfAction.create({
-               data: {
-                  requestId: request.id, actorId: request.requesterId, 
-                  stepName: 'ตีกลับให้ผู้ขอแก้ไขข้อมูล', action: 'PENDING',
-                  comment: 'ระบบไม่พบผู้อนุมัติในขั้นตอนก่อนหน้า จึงตีกลับมายังผู้ขอรายการ'
-               }
-            });
-         }
+         // แปลง data ก่อนส่งต่อ (ป้องกัน error กรณีข้อมูลเป็น String)
+         const requestData = request.data ? (typeof request.data === 'string' ? JSON.parse(request.data) : request.data) : {};
+
+         // 🎯 เรียกใช้ assignApprovers แทนการสร้าง PENDING แบบ Manual
+         // การส่ง `true` (isSendBack) จะไประงับลอจิก Auto-Approve อัตโนมัติ 
+         // และแจกกล่อง PENDING ให้ทั้ง Manager 1 และ Manager 2 พร้อมกัน
+         await this.wfRequestService.assignApprovers(
+            request.id, 
+            targetNode, 
+            request.requesterId, 
+            companyId, 
+            requestData, 
+            allNodes, 
+            true // 🛑 โยน Flag isSendBack = true
+         );
       }
     }
 
