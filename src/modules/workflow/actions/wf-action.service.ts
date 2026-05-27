@@ -283,6 +283,22 @@ export class WfActionService {
     return { message: 'ประมวลผลการกระทำสำเร็จ' };
   }
 
+  // 🌟 เพิ่มฟังก์ชันนี้ลงใน WfActionService
+  private async cancelOtherPendingActions(requestId: number, currentActionId: number, stepName: string) {
+    await this.prisma.wfAction.updateMany({
+      where: {
+        requestId: requestId,
+        stepName: stepName,
+        action: 'PENDING',
+        id: { not: currentActionId } // ลบของคนอื่นที่ยังไม่กด แต่เว้นของคนที่กดอนุมัติไว้
+      },
+      data: {
+        action: 'CANCELLED',
+        comment: 'ถูกยกเลิกเนื่องจากมีผู้อนุมัติท่านอื่นดำเนินการไปแล้ว'
+      }
+    });
+  }
+
 // =========================================================
   // 🛡️ Helper: ตรวจสอบสิทธิ์ว่ามี Inbox ค้างอยู่ไหม (รองรับ Delegation)
   // =========================================================

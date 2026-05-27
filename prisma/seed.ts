@@ -2294,12 +2294,12 @@ async function seedSystemEnums() {
     // --- 📌 VoteRule ---
     { groupId: groupMap.get('VOTE_RULE'), code: 'ANY_APPROVE', name: 'ใครก็ได้อนุมัติ 1 คน = ผ่าน', colorCode: '#06B6D4', sortOrder: 1 }, // สีฟ้าอมเขียว
     { groupId: groupMap.get('VOTE_RULE'), code: 'ALL_MUST_APPROVE', name: 'ต้องอนุมัติทุกคน = ผ่าน', colorCode: '#4F46E5', sortOrder: 2 }, // สีคราม (Indigo)
-
+    { groupId: groupMap.get('VOTE_RULE'), code: 'CUSTOM_PERCENTAGE', name: 'ต้องอนุมัติตาม % ที่กำหนด', colorCode: '#4F46E5', sortOrder: 2 }, // สีคราม (Indigo)
 
     // --- 📌 wf_nodeType ---
-    { groupId: groupMap.get('WORKFLOW_NODETYPE'), code: 'APPROVAL', name: 'ต้องมีคนกดอนุมัติ (ค่า Default)', colorCode: '#06B6D4', sortOrder: 1 }, // สีฟ้าอมเขียว
-    { groupId: groupMap.get('WORKFLOW_NODETYPE'), code: 'FYI', name: 'แค่ส่งแจ้งเตือน (CC) ไม่ต้องกดอนุมัติ ระบบจะวิ่งผ่านไปโหนดต่อไปเลย', colorCode: '#4F46E5', sortOrder: 2 }, // สีคราม (Indigo)
-    { groupId: groupMap.get('WORKFLOW_NODETYPE'), code: 'CONDITION', name: 'โหนดทางแยก (เช่น ถ้ายอด > 10,000 ไปโหนด A, ถ้าน้อยกว่า ไปโหนด B)', colorCode: '#06B6D4', sortOrder: 3 }, // สีฟ้าอมเขียว
+    { groupId: groupMap.get('WORKFLOW_NODETYPE'), code: 'APPROVAL', name: 'ขออนุมัติ', colorCode: '#06B6D4', sortOrder: 1 }, // สีฟ้าอมเขียว
+    { groupId: groupMap.get('WORKFLOW_NODETYPE'), code: 'FYI', name: 'แจ้งพื่อทราบ (ไม่ต้องอนุมัติ)', colorCode: '#4F46E5', sortOrder: 2 }, // สีคราม (Indigo)
+    { groupId: groupMap.get('WORKFLOW_NODETYPE'), code: 'CONDITION', name: 'เงื่อนไขแยกเส้นทาง', colorCode: '#06B6D4', sortOrder: 3 }, // สีฟ้าอมเขียว
     { groupId: groupMap.get('WORKFLOW_NODETYPE'), code: 'PARALLEL_SPLIT', name: 'โหนดแยกสาย (แจกงานไป 2 แผนกพร้อมกัน)', colorCode: '#9f11ae', sortOrder: 4 }, // สีคราม (Indigo)
     { groupId: groupMap.get('WORKFLOW_NODETYPE'), code: 'PARALLEL_JOIN', name: 'โหนดมัดรวม (รอด่านย่อยเสร็จครบ ถึงจะไปต่อ)', colorCode: '#c6dd5f', sortOrder: 4 }, // สีคราม (Indigo)
 
