@@ -30,4 +30,21 @@ export class WfActionController {
   ) {
     return this.service.getHistory(req.user.companyId, requestId);
   }
+
+  // ==========================================
+  // 3. ส่งผลการอนุมัติแบบหลายรายการ (Batch / Bulk Action)
+  // ==========================================
+  @Post('batch')
+  @RequirePermissions('workflow_request:create')
+  processBatchAction(
+    @Request() req, 
+    @Body() dto: { requestIds: number[], action: any, comment?: string }
+  ) {
+    // โยนข้อมูลไปให้ Service ที่เราเพิ่งสร้างจัดการลูปและ Transaction
+    return this.service.processBatchActions(
+      req.user.companyId, 
+      req.user.userId, 
+      dto
+    );
+  }
 }

@@ -298,6 +298,32 @@ if ([ActionType.APPROVE, ActionType.REJECT, ActionType.SEND_BACK].includes(dto.a
     return { message: 'ประมวลผลการกระทำสำเร็จ' };
   }
 
+async processBatchActions(companyId: number, userId: number, dto: { requestIds: number[], action: any, comment?: string }) {
+  // ใช้ Prisma Transaction ครอบเพื่อความปลอดภัย
+  return await this.prisma.$transaction(async (tx) => {
+    
+    // 🌟 1. ประกาศ Type เป็น any[] ตรงนี้ครับ (แก้ TS2345)
+    const results: any[] = []; 
+    
+    for (const requestId of dto.requestIds) {
+      // เรียกฟังก์ชันประมวลผล Action ปกติของแต่ละใบ
+      const result = await this.create(companyId, userId, {
+        requestId,
+        action: dto.action,
+        comment: dto.comment || 'อนุมัติผ่านระบบ Batch Action'
+      });
+      
+      // ตอนนี้จะสามารถ push ข้อมูลได้ปกติแล้ว
+      results.push(result);
+    }
+    
+    return {
+      message: `ดำเนินการเสร็จสิ้น ${results.length} รายการ`,
+      results: results
+    };
+  });
+}
+
   // =========================================================
   // 🛡️ Helper Methods
   // =========================================================
