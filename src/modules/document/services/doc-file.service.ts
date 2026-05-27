@@ -1163,14 +1163,12 @@ async verifyFileIntegrity(companyId: number, fileId: number) {
     if (roleId === 1) {
       hasSourceAccess = true;
     } else if (file.folder?.isWorkspace) {
-      // 🏛️ ใช้ฟิลด์ที่มีจริงคือ canDelete (และตรวจสอบว่าไม่ได้เป็น null)
-      const access = await this.prisma.docFolderAccess.findFirst({
-        where: { folderId: file.folderId as number, userId: userId }
-      });
-      if (access && access.canDelete) hasSourceAccess = true;
+      // 🌟 [แก้บั๊ก] ใช้ hasFolderAccess แทน เพื่อรองรับสิทธิ์แบบ Role และการสืบทอด
+      hasSourceAccess = await this.hasFolderAccess(file.folderId, userId, roleId, 'canDelete');
     } else {
       if (file.uploadedById === userId) hasSourceAccess = true;
     }
+    
     if (!hasSourceAccess) throw new ForbiddenException('คุณไม่มีสิทธิ์ดึงไฟล์ออกจากโฟลเดอร์ต้นทาง');
 
     // --- 🛡️ 3. เช็กสิทธิ์เอาไฟล์ไปวางใน "โฟลเดอร์ปลายทาง" ---
@@ -1183,34 +1181,32 @@ async verifyFileIntegrity(companyId: number, fileId: number) {
       let hasTargetAccess = false;
       if (roleId === 1) {
         hasTargetAccess = true;
-      } else if (targetFolder.isWorkspace) {
-        // 🏛️ ในเมื่อไม่มี canManage ให้ใช้ canUpload หรือสิทธิ์สูงสุดที่มีแทน
-        const access = await this.prisma.docFolderAccess.findFirst({
-          where: { folderId: newFolderId, userId: userId }
-        });
-        // ตรวจสอบสิทธิ์ที่มีอยู่จริง (เช่น canUpload หรือ canDelete)
-        if (access && (access.canUpload || access.canDelete)) hasTargetAccess = true;
       } else {
-        const access = await this.prisma.docFolderAccess.findFirst({
-          where: { folderId: newFolderId, userId: userId }
-        });
-        if (access) hasTargetAccess = true;
+        // 🌟 [แก้บั๊ก] ตรวจสอบสิทธิ์ว่าคนนี้ หรือ Role นี้ (Manager) มีสิทธิ์ Upload ไหม
+        hasTargetAccess = await this.hasFolderAccess(newFolderId, userId, roleId, 'canUpload');
       }
       
-      if (!hasTargetAccess) throw new ForbiddenException('คุณไม่มีสิทธิ์นำไฟล์ไปวางในโฟลเดอร์ปลายทาง');
+      if (!hasTargetAccess) throw new ForbiddenException('ไม่สามารถนำไฟล์ไปวางในโฟลเดอร์ปลายทางได้ (คุณต้องมีสิทธิ์ Upload หรือ Manage)');
     }
-    // 🔄 4. อัปเดต folderId ปลายทาง
+    
+    // 🔄 4. อัปเดต folderId ปลายทาง (ย้ายไฟล์จริง)
     await this.prisma.docFile.update({
       where: { id: fileId },
       data: { folderId: newFolderId }
     });
 
-    // 🌟 5. ตรวจสอบว่าโฟลเดอร์ปลายทางมีการตั้งค่า Workflow อนุมัติการ UPLOAD ไว้หรือไม่
+    // 🌟 5. ตรวจสอบว่าโฟลเดอร์ปลายทางมีการตั้งค่า Workflow อนุมัติไว้หรือไม่
     let targetWorkflowId = await this.getInheritedWorkflow(newFolderId, companyId, 'UPLOAD');
 
     if (!targetWorkflowId) {
+      // ลองค้นหา Module Mapping กลางของบริษัท
       const mapping = await this.prisma.wfModuleMapping.findFirst({
-        where: { companyId: companyId, moduleCode: 'DOC_UPLOAD', isActive: true }
+        where: { 
+          companyId: companyId, 
+          moduleCode: { in: ['DOC_MOVE', 'DOC_UPLOAD'] }, 
+          isActive: true 
+        },
+        orderBy: { moduleCode: 'asc' } // ให้ความสำคัญกับ DOC_MOVE ก่อน
       });
       if (mapping) targetWorkflowId = mapping.workflowId;
     }
@@ -1219,26 +1215,38 @@ async verifyFileIntegrity(companyId: number, fileId: number) {
     if (targetWorkflowId) {
       console.log(`[Move File] โฟลเดอร์ปลายทางมี Workflow ID ${targetWorkflowId} กำลังส่งเรื่องอัตโนมัติ...`);
 
-      // 🌟 Fix: ระบุ Type เป็น any ป้องกัน TS2339 Error
+      // 🤖 ระบบจะวิเคราะห์อัตโนมัติว่าคนย้าย (Manager) มีสิทธิ์อนุมัติไหม 
+      // ถ้ามีอำนาจสุดสาย มันจะ Auto-Approve ให้เลย!
       const request: any = await this.wfRequestService.create(companyId, userId, {
-        moduleCode: 'DOC_UPLOAD',
+        moduleCode: 'DOC_MOVE',
         workflowId: targetWorkflowId,
         businessId: String(fileId),
         topic: `ขออนุมัติเอกสาร (ย้ายโฟลเดอร์): ${file.fileName}`,
       } as any);
 
+      // ถ้าถูก Auto-Approve จนสุดสายไปแล้ว (Fast-Forward ทะลุ)
+      if (request.status === 'APPROVED') {
+          return { 
+             message: 'ย้ายไฟล์สำเร็จ (อนุมัติอัตโนมัติเนื่องจากท่านเป็นผู้มีอำนาจในโฟลเดอร์นี้)',
+             isPendingApproval: false
+          };
+      }
+
+      // ถ้าติดสถานะรออนุมัติ (Manager ไม่ได้มีอำนาจอนุมัติข้ามสาย)
       await this.prisma.docFile.update({
         where: { id: fileId },
         data: { wfRequestId: request.id }
       });
 
       return { 
-        message: 'ย้ายไฟล์สำเร็จ และได้ส่งเอกสารเข้าสู่กระบวนการอนุมัติของโฟลเดอร์ใหม่เรียบร้อยแล้ว',
-        isPendingApproval: true
+        message: 'ส่งเอกสารเข้าสู่กระบวนการอนุมัติของโฟลเดอร์ใหม่เรียบร้อยแล้ว',
+        isPendingApproval: true,
+        wfRequestId: request.id
       };
     }
 
-    return { message: 'ย้ายไฟล์สำเร็จ (โฟลเดอร์ปลายทางไม่มีสายอนุมัติ)', isPendingApproval: false };
+    // ถ้าโฟลเดอร์ปลายทางไม่บังคับ Workflow เลย
+    return { message: 'ย้ายไฟล์สำเร็จ (ไม่มีการตั้งค่าสายอนุมัติ)', isPendingApproval: false };
   }
 
   // 🌟 [NEW] ฟังก์ชันสำหรับให้ AI คัดแยกไฟล์เข้าโฟลเดอร์

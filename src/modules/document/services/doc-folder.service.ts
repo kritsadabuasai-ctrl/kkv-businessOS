@@ -1,4 +1,7 @@
-import { Injectable, BadRequestException, NotFoundException ,ForbiddenException } from '@nestjs/common';
+// 🌟 1. เพิ่มการ Import forwardRef และ Inject ที่ด้านบนสุดของไฟล์ร่วมกับตัวอื่น
+import { Injectable, BadRequestException, NotFoundException, ForbiddenException, Inject, forwardRef } from '@nestjs/common';
+import { WfRequestService } from '../../workflow/requests/wf-request.service'; // 🌟 เช็ก Path ให้ตรงกับโปรเจกต์ด้วยนะครับ
+
 import { PrismaService } from '../../../prisma/prisma.service'; 
 import { CreateFolderDto } from '../dto/create-folder.dto';
 import { UpdateFolderDto } from '../dto/update-folder.dto'; // 🌟 Import DTO สำหรับอัปเดตแฟ้ม
@@ -6,12 +9,15 @@ import { StorageService } from '../../sys/storage/storage.service'; // 🌟 Impo
 
 
 
-
 @Injectable()
 export class DocFolderService {
   constructor(
     private readonly prisma: PrismaService,
-    private readonly storageService: StorageService // 🌟 Inject StorageService เพิ่มเพื่อใช้คืนโควตา
+    private readonly storageService: StorageService,
+    
+    // 🌟 2. Inject WfRequestService เข้ามาใช้งานใน Class
+    @Inject(forwardRef(() => WfRequestService))
+    private readonly wfRequestService: WfRequestService 
   ) {}
 
 // ==========================================
@@ -278,10 +284,10 @@ export class DocFolderService {
     return folderIds.reverse(); 
   }
 
+// ==========================================
+  // 🚚 ฟังก์ชันย้ายโฟลเดอร์ (SharePoint Guard + Look-Ahead Auto-Approve)
   // ==========================================
-  // 🚚 ฟังก์ชันย้ายโฟลเดอร์ (พร้อมป้องกันไฟล์ด้านในที่ติด Workflow)
-  // ==========================================
-  async moveFolder(companyId: number, folderId: number, newParentId: number | null) {
+  async moveFolder(companyId: number, folderId: number, userId: number, roleId: number, newParentId: number | null) {
     // 1. ตรวจสอบโฟลเดอร์ต้นทาง
     const folderToMove = await this.prisma.docFolder.findFirst({
       where: { id: folderId, companyId: companyId }
@@ -299,18 +305,34 @@ export class DocFolderService {
       if (newParentId === folderId) {
         throw new BadRequestException('ไม่สามารถย้ายโฟลเดอร์ไปไว้ในตัวมันเองได้');
       }
-      // ตรวจสอบว่าโฟลเดอร์ปลายทาง ไม่ได้เป็นลูก/หลาน ของโฟลเดอร์ที่กำลังจะย้าย
       const allChildrenIds = await this.getAllFolderIdsRecursive(folderId);
       if (allChildrenIds.includes(newParentId)) {
         throw new BadRequestException('ไม่สามารถย้ายโฟลเดอร์หลักเข้าไปไว้ในโฟลเดอร์ย่อยของตัวเองได้');
       }
     }
 
-    // 🛑 3. [CRITICAL LOGIC] ป้องกันการย้าย ถ้ามีไฟล์ด้านใน (รวมถึงแฟ้มลูก) ติด Workflow อยู่
-    // ดึงรหัสโฟลเดอร์ทั้งหมด (ตัวมันเอง + ลูกหลาน)
-    const allFolderIdsToCheck = await this.getAllFolderIdsRecursive(folderId);
+    // --- 🛡️ 3. เช็กสิทธิ์ดึงโฟลเดอร์ออกจาก "ตำแหน่งเดิม" ---
+    let hasSourceAccess = false;
+    if (roleId === 1) {
+      hasSourceAccess = true;
+    } else {
+      hasSourceAccess = await this.hasFolderAccess(folderId, userId, roleId, 'canDelete');
+    }
+    if (!hasSourceAccess) throw new ForbiddenException('คุณไม่มีสิทธิ์ดึงโฟลเดอร์นี้ออกจากตำแหน่งเดิม');
 
-    // ค้นหาไฟล์ทั้งหมดที่อยู่ในตระกูลโฟลเดอร์นี้ และเช็คว่ามีตัวไหนกำลัง PENDING/IN_PROGRESS หรือไม่
+    // --- 🛡️ 4. เช็กสิทธิ์เอาโฟลเดอร์ไปวางใน "โฟลเดอร์ปลายทางใหม่" ---
+    if (newParentId) {
+      let hasTargetAccess = false;
+      if (roleId === 1) {
+        hasTargetAccess = true;
+      } else {
+        hasTargetAccess = await this.hasFolderAccess(newParentId, userId, roleId, 'canUpload');
+      }
+      if (!hasTargetAccess) throw new ForbiddenException('คุณไม่มีสิทธิ์นำโฟลเดอร์มาวางในโฟลเดอร์ปลายทางนี้');
+    }
+
+    // 🛑 5. [CRITICAL LOGIC] ป้องกันการย้าย ถ้ามีไฟล์ด้านใน (รวมถึงแฟ้มลูก) ติด Workflow อยู่
+    const allFolderIdsToCheck = await this.getAllFolderIdsRecursive(folderId);
     const lockedFilesCount = await this.prisma.docFile.count({
       where: { 
         folderId: { in: allFolderIdsToCheck }, 
@@ -322,16 +344,64 @@ export class DocFolderService {
     });
 
     if (lockedFilesCount > 0) {
-      throw new BadRequestException(`ไม่สามารถย้ายโฟลเดอร์นี้ได้ เนื่องจากมีเอกสารด้านใน (หรือในโฟลเดอร์ย่อย) จำนวน ${lockedFilesCount} รายการ กำลังอยู่ในกระบวนการรออนุมัติ`);
+      throw new BadRequestException(`ไม่สามารถย้ายโฟลเดอร์นี้ได้ เนื่องจากมีเอกสารด้านใน จำนวน ${lockedFilesCount} รายการ กำลังอยู่ในกระบวนการรออนุมัติ`);
     }
 
-    // 🔄 4. ถ้าผ่านทุกเงื่อนไข ให้ทำการย้าย (อัปเดต parentId)
+    // 🔄 6. ทำการอัปเดตตำแหน่งย้ายจริงลงฐานข้อมูล
     await this.prisma.docFolder.update({
       where: { id: folderId },
       data: { parentId: newParentId }
     });
 
-    return { message: 'ย้ายโฟลเดอร์เรียบร้อยแล้ว' };
+    // =========================================================
+    // 🚦 7. ระบบตรวจสอบสายอนุมัติการย้าย (Workflow Integration)
+    // =========================================================
+    // 🌟 [แก้ไขจุดนี้] ระบุ Type ให้ชัดเจนเพื่อบอก TS ว่า ตัวแปรนี้ใส่ number ได้นะ ไม่ใช่แค่ null
+    let targetWorkflowId: number | null = null;
+
+    // หาดูว่าโฟลเดอร์ปลายทางใหม่ มีการผูกสายอนุมัติเริ่มต้นไว้ไหม
+    if (newParentId) {
+      const targetFolder = await this.prisma.docFolder.findUnique({
+        where: { id: newParentId },
+        select: { defaultWorkflowId: true }
+      });
+      targetWorkflowId = targetFolder?.defaultWorkflowId ?? null;
+    }
+
+    // หากแฟ้มปลายทางไม่มีสายอนุมัติเฉพาะ ให้วิ่งไปหาจาก Module Mapping ส่วนกลาง (รหัส DOC_MOVE)
+    if (!targetWorkflowId) {
+      const mapping = await this.prisma.wfModuleMapping.findFirst({
+        where: { companyId, moduleCode: 'DOC_MOVE', isActive: true }
+      });
+      targetWorkflowId = mapping?.workflowId ?? null;
+    }
+
+    // 🚀 8. ถ้าระบบตรวจเจอสายอนุมัติ ให้เตะเข้า Workflow Engine ทันที
+    if (targetWorkflowId) {
+      console.log(`[Move Folder] พบสายอนุมัติ ID ${targetWorkflowId} สำหรับการย้ายแฟ้ม ${folderId} กำลังส่งประมวลผล...`);
+
+      const request: any = await this.wfRequestService.create(companyId, userId, {
+        moduleCode: 'DOC_MOVE',
+        workflowId: targetWorkflowId,
+        businessId: String(folderId),
+        topic: `ขออนุมัติย้ายโฟลเดอร์: ${folderToMove.name}`,
+      } as any);
+
+      if (request.status === 'APPROVED') {
+        return { 
+          message: 'ย้ายโฟลเดอร์สำเร็จ (ระบบอนุมัติอัตโนมัติเนื่องจากท่านเป็นผู้มีอำนาจในสายงานนี้)', 
+          isPendingApproval: false 
+        };
+      }
+
+      return { 
+        message: 'ส่งคำขออนุมัติย้ายโฟลเดอร์เข้าสู่กระบวนการตรวจสอบเรียบร้อยแล้ว', 
+        isPendingApproval: true,
+        workflowRequestId: request.id
+      };
+    }
+
+    return { message: 'ย้ายโฟลเดอร์เรียบร้อยแล้ว (ไม่มีเงื่อนไขสายอนุมัติบังคับ)', isPendingApproval: false };
   }
 
 
