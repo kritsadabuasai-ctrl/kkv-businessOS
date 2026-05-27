@@ -155,7 +155,7 @@ export class DocFileService {
   }
 
   // ==========================================
-  // 📁 2. ดึงรายการไฟล์ทั้งหมดในแฟ้มข้อมูล (คัดกรองตามสิทธิ์การมองเห็น)
+  // 📁 2. ดึงรายการไฟล์ทั้งหมดในแฟ้มข้อมูล (คัดกรองตามสิทธิ์การมองเห็น + แนบสิทธิ์ Recall)
   // ==========================================
   async listFilesByFolder(companyId: number, folderId: number, userId: number, roleId: number, isHQ: boolean = false) {
     // 1. ดึงไฟล์ทั้งหมดในโฟลเดอร์นั้นขึ้นมาตรวจสอบ
@@ -163,8 +163,8 @@ export class DocFileService {
       where: { folderId: folderId, companyId: companyId },
       include: {
         wfRequest: true,
-        versions: { // 👈 ต้องมี include ตัวนี้เสมอ
-          orderBy: { version: 'desc' } // ✅ แก้จาก versionNumber เป็น version
+        versions: { 
+          orderBy: { version: 'desc' }
         }
       }
     });
@@ -175,26 +175,48 @@ export class DocFileService {
     for (const file of allFiles) {
       const canAccessDraft = await this.hasDraftAccess(file, userId, roleId, isHQ);
 
+      // 🌟 [NEW LOGIC] คำนวณสิทธิ์ canRecall ของแต่ละไฟล์ในลิสต์เพื่อให้หน้าบ้านเปิด/ปิดปุ่มได้ถูกต้อง
+      let canRecall = false;
+      if (file.wfRequest && file.wfRequest.status === 'IN_PROGRESS') {
+        if (roleId === 1 || userId === 1) {
+          canRecall = true;
+        } else {
+          // ค้นหาบุคคลล่าสุดที่กด APPROVE จริงๆ ของคำร้องนี้ (ข้ามพวก System Auto ออกไป)
+          const lastApproveAction = await this.prisma.wfAction.findFirst({
+            where: {
+              requestId: file.wfRequest.id,
+              action: 'APPROVE',
+              comment: { not: { contains: 'System Auto' } }
+            },
+            orderBy: { id: 'desc' }
+          });
+          if (lastApproveAction && lastApproveAction.actorId === userId) {
+            canRecall = true;
+          }
+        }
+      }
+
       if (canAccessDraft) {
-        // 🟢 กลุ่มสิทธิ์พิเศษ: เห็นไฟล์ตามปกติ และเห็นข้อมูลอัปเดตล่าสุด (เช่น ชื่อไฟล์ หรือขนาดของ V2 Pending)
-        filteredFiles.push(file);
+        // 🟢 กลุ่มสิทธิ์พิเศษ: เห็นไฟล์ตามปกติ และเห็นข้อมูลอัปเดตล่าสุด
+        filteredFiles.push({
+          ...file,
+          canRecall // 🚀 แนบสิทธิ์ส่งกลับไปให้หน้าบ้าน
+        });
       } else {
         // 🔴 คนทั่วไป: หาเวอร์ชันที่ถูกใช้งานปัจจุบัน (isCurrent === true)
         const activeVersion = file.versions.find(v => v.isCurrent === true);
 
-        // ถ้าไฟล์นี้ไม่มีเวอร์ชันที่เป็น Active เลย (แปลว่าเพิ่งสร้าง V1 และค้าง Approve อยู่) -> ให้ซ่อนไฟล์นี้จากคนทั่วไป
         if (!activeVersion) {
           continue; 
         }
 
-        // ถ้ามีเวอร์ชัน Active (เช่น V1 Approved แต่ V2 ค้างอยู่) -> ให้ส่งข้อมูลกลับไปเฉพาะส่วนของ V1 เท่านั้น
         filteredFiles.push({
           ...file,
-          // ใช้ fileName จากไฟล์หลัก และเอา URL/Size จากเวอร์ชันที่ใช้งานจริงมาแสดง
           fileName: file.fileName, 
           currentUrl: activeVersion.url,
           currentSize: activeVersion.size,
-          versions: [activeVersion] 
+          versions: [activeVersion],
+          canRecall // 🚀 แนบสิทธิ์ส่งกลับไปให้หน้าบ้าน
         });
       }
     }
@@ -506,7 +528,6 @@ async verifyFileIntegrity(companyId: number, fileId: number) {
 
 
   // 🌟 [NEW] ฟังก์ชันสำหรับปลดล็อกไฟล์ภายในองค์กร
-  // 🌟 [NEW] ฟังก์ชันสำหรับปลดล็อกไฟล์ภายในองค์กร
   async unlockFileInternal(companyId: number, fileId: number, dto: UnlockFileDto) {
     const file = await this.prisma.docFile.findFirst({
       where: { id: fileId, companyId }
@@ -577,7 +598,7 @@ async verifyFileIntegrity(companyId: number, fileId: number) {
     if (shareLink.password) {
       if (!password) {
         // ถ้าลิงก์มีรหัส แต่หน้าบ้านไม่ได้ส่งรหัสมา ให้เด้งกลับไปถามรหัสผ่าน
-        throw new UnauthorizedException('ลิงก์นี้มีการป้องกันด้วยรหัสผ่าน กรุณาระบุรหัสผ่าน');
+        throw new UnauthorizedException('ลิงก์นี้มีการป้องกันด้วยรหัสผ่าน กรุณาะบุรหัสผ่าน');
       }
 
       // เทียบรหัสผ่านด้วย bcrypt
@@ -858,16 +879,13 @@ async verifyFileIntegrity(companyId: number, fileId: number) {
   // 🌟 [อัปเดต] ฟังก์ชันยิง Workflow ขอสิทธิ์เข้าถึง (รองรับทั้ง View และขอ RAW_FILE)
   // ==========================================
   async requestFileAccess(companyId: number, userId: number, dto: any) {
-    // 1. ตรวจสอบว่ามีไฟล์อยู่จริง
     const file = await this.prisma.docFile.findFirst({
       where: { id: dto.targetId, companyId }
     });
     if (!file) throw new NotFoundException('ไม่พบไฟล์ที่ต้องการขอสิทธิ์');
 
-    // 🌟 [NEW] รับประเภทการขอสิทธิ์จากหน้าบ้าน (เช่น 'VIEW', 'DOWNLOAD', 'RAW_FILE')
     const accessType = dto.accessType || 'VIEW'; 
 
-    // 2. ป้องกันการสแปม: เช็คว่ามีคำขอ PENDING ค้างอยู่หรือยัง
     const existingReq = await this.prisma.docAccessRequest.findFirst({
       where: { 
         companyId, 
@@ -875,15 +893,12 @@ async verifyFileIntegrity(companyId: number, fileId: number) {
         targetType: 'FILE', 
         targetId: dto.targetId, 
         status: 'PENDING' 
-        // 💡 หมายเหตุ: หากในอนาคตมีการเพิ่มฟิลด์ accessType ใน Prisma สามารถนำมาดักจับตรงนี้เพิ่มได้ครับ
-        // , accessType: accessType 
       }
     });
     if (existingReq) {
       throw new BadRequestException('คุณได้ส่งคำขอสิทธิ์สำหรับไฟล์นี้ไปแล้ว กรุณารอการอนุมัติ');
     }
 
-    // 3. หา Workflow สำหรับ DATA_ACCESS (ไปผูกใน Module Mapping ไว้รหัส DATA_ACCESS)
     const mapping = await this.prisma.wfModuleMapping.findFirst({
       where: { companyId, moduleCode: 'DATA_ACCESS', isActive: true }
     });
@@ -892,7 +907,6 @@ async verifyFileIntegrity(companyId: number, fileId: number) {
       throw new BadRequestException('ระบบยังไม่ได้ตั้งค่าสายอนุมัติสำหรับการขอเข้าถึงข้อมูล (DATA_ACCESS)');
     }
 
-    // 🌟 [NEW] สร้าง Topic ให้ชัดเจน เพื่อให้ผู้อนุมัติ (Manager/Admin) ตัดสินใจได้ถูกต้องและปลอดภัย
     let topicPrefix = 'ขอสิทธิ์เข้าดูไฟล์';
     if (accessType === 'RAW_FILE') {
       topicPrefix = '🚨 ขออนุมัติดาวน์โหลดไฟล์ต้นฉบับ (ไม่มีลายน้ำ)';
@@ -900,7 +914,6 @@ async verifyFileIntegrity(companyId: number, fileId: number) {
       topicPrefix = 'ขอสิทธิ์ดาวน์โหลดไฟล์ (มีลายน้ำ)';
     }
 
-    // 4. สร้างบันทึกคำขอ (สถานะ PENDING)
     const accessReq = await this.prisma.docAccessRequest.create({
       data: {
         companyId,
@@ -908,15 +921,11 @@ async verifyFileIntegrity(companyId: number, fileId: number) {
         targetType: 'FILE',
         targetId: dto.targetId,
         reason: dto.reason || 'ขอสิทธิ์เข้าถึงเพื่อปฏิบัติงาน',
-        durationDays: dto.durationDays || 1, // ค่าเริ่มต้น 1 วัน
+        durationDays: dto.durationDays || 1, 
         status: 'PENDING',
-        // 💡 หากเพิ่มฟิลด์ใน Schema สามารถบันทึกค่าลงไปเพื่อทำ Audit Log ได้เลยครับ
-        // accessType: accessType 
       }
     });
 
-    // 5. โยนเข้า Workflow Engine
-    // 🌟 Fix: ระบุ Type เป็น any ป้องกัน TS2339 Error
     const request: any = await this.wfRequestService.create(companyId, userId, {
       moduleCode: 'DATA_ACCESS',
       workflowId: mapping.workflowId,
@@ -924,7 +933,6 @@ async verifyFileIntegrity(companyId: number, fileId: number) {
       topic: `${topicPrefix}: ${file.fileName}`, 
     } as any);
 
-    // 6. อัปเดต ID กลับเข้าคำขอ
     await this.prisma.docAccessRequest.update({
       where: { id: accessReq.id },
       data: { wfRequestId: request.id }
@@ -940,7 +948,6 @@ async verifyFileIntegrity(companyId: number, fileId: number) {
   // 💎 [ฟังก์ชันเต็ม] ดาวน์โหลดเอกสารต้นฉบับแบบไม่มีลายน้ำ (Strict SharePoint + Workflow Guard)
   // ==========================================
   async downloadOriginalFile(companyId: number, fileId: number, userId: number, roleId: number, isHQ: boolean = false) {
-    // 🌟 [UPDATE] ดึงไฟล์พร้อมข้อมูลโฟลเดอร์, workflow, และประวัติเวอร์ชันทั้งหมดเพื่อใช้คุมสิทธิ์
     const file = await this.prisma.docFile.findFirst({
       where: { id: fileId, companyId },
       include: { 
@@ -954,7 +961,6 @@ async verifyFileIntegrity(companyId: number, fileId: number) {
 
     let hasAccess = false;
 
-    // 🛡️ กฎการโหลดไฟล์ต้นฉบับเข้มงวดกว่าปกติ
     if (roleId === 1) {
       hasAccess = true; 
     } else if (file.folder?.isWorkspace) {
@@ -969,12 +975,10 @@ async verifyFileIntegrity(companyId: number, fileId: number) {
       throw new ForbiddenException('สงวนสิทธิ์การดาวน์โหลดไฟล์ต้นฉบับเฉพาะเจ้าของไฟล์ หรือผู้ดูแล Workspace (Manager) เท่านั้น');
     }
 
-    // 🌟 [NEW GUARD] ตรวจสอบสิทธิ์การเข้าถึงไฟล์ฉบับร่าง/ระหว่างอนุมัติ (Workflow Context Guard)
     const canAccessDraft = await this.hasDraftAccess(file, userId, roleId, isHQ);
     let targetUrl = file.currentUrl;
 
     if (!canAccessDraft) {
-      // 🔴 ไม่มีสิทธิ์ดูไฟล์ร่าง -> ค้นหาเวอร์ชันเก่าที่ถูกอนุมัติแล้วมาเสิร์ฟแทน
       const activeVersion = file.versions?.find(v => v.isCurrent === true);
       
       if (!activeVersion) {
@@ -1016,7 +1020,6 @@ async verifyFileIntegrity(companyId: number, fileId: number) {
       
       for (const file of expiredFiles) {
         try {
-          // 🌟 ใส่เลข 0 เพื่อบอกว่าเป็น "ระบบ" เป็นคนสั่งลบ
           await this.deleteFile(file.id, file.companyId, 0);
           console.log(`✅ ลบเอกสารหมดอายุสำเร็จ: ID ${file.id}`);
         } catch (error: any) {
@@ -1034,17 +1037,14 @@ async verifyFileIntegrity(companyId: number, fileId: number) {
     const now = new Date();
     
     try {
-      // 1. ลบสิทธิ์ไฟล์ที่หมดอายุ
       const deletedFiles = await this.prisma.docFileAccess.deleteMany({
         where: { expiresAt: { lte: now } }
       });
 
-      // 2. ลบสิทธิ์โฟลเดอร์ที่หมดอายุ
       const deletedFolders = await this.prisma.docFolderAccess.deleteMany({
         where: { expiresAt: { lte: now } }
       });
       
-      // แสดง Log เฉพาะวันที่มีการลบสิทธิ์ทิ้งจริงๆ
       if (deletedFiles.count > 0 || deletedFolders.count > 0) {
         console.log(`[Security] ยกเลิกสิทธิ์ที่หมดอายุเรียบร้อยแล้ว: ไฟล์ ${deletedFiles.count} รายการ, โฟลเดอร์ ${deletedFolders.count} รายการ.`);
       }
@@ -1064,7 +1064,6 @@ async verifyFileIntegrity(companyId: number, fileId: number) {
 
     if (!doc) throw new NotFoundException('ไม่พบเอกสารที่ต้องการอัปเดต');
 
-    // 🛡️ ป้องกันการแก้ไขหากเอกสารติดสถานะรออนุมัติ
     if (doc.wfRequest && ['PENDING', 'IN_PROGRESS'].includes(doc.wfRequest.status)) {
       throw new BadRequestException('ไม่สามารถเพิ่มเวอร์ชันใหม่ได้ เนื่องจากเอกสารกำลังอยู่ในขั้นตอนการอนุมัติ');
     }
@@ -1105,20 +1104,17 @@ async verifyFileIntegrity(companyId: number, fileId: number) {
   // 3. จัดการ Metadata สำหรับ Advanced Search (Workflow Guarded)
   // ==========================================
   async updateMetadata(companyId: number, fileId: number, metadata: { key: string, value: string }[]) {
-    // 🌟 1. ดึงข้อมูลไฟล์เพื่อตรวจสอบสถานะ Workflow ก่อน
     const file = await this.prisma.docFile.findFirst({
       where: { id: fileId, companyId },
-      include: { wfRequest: true } // ต้องดึงข้อมูล Workflow มาเช็ก
+      include: { wfRequest: true } 
     });
 
     if (!file) throw new NotFoundException('ไม่พบเอกสาร');
 
-    // 🛑 2. ด่านสกัดกั้น (Workflow Guard) ห้ามแก้ไขหากไฟล์ติดคิวอนุมัติ
     if (file.wfRequest && ['PENDING', 'IN_PROGRESS'].includes(file.wfRequest.status)) {
       throw new BadRequestException('ไม่สามารถแก้ไข Metadata ได้ เนื่องจากเอกสารฉบับนี้กำลังอยู่ในขั้นตอนกระบวนการอนุมัติ');
     }
 
-    // 💾 3. บันทึกข้อมูลตามปกติ หากไม่ติดสถานะใดๆ
     return await this.prisma.$transaction(async (tx) => {
       await tx.docFileMetadata.deleteMany({ where: { fileId, companyId } });
 
@@ -1141,7 +1137,6 @@ async verifyFileIntegrity(companyId: number, fileId: number) {
   // 🚚 ฟังก์ชันย้ายไฟล์ (SharePoint Guard + Trigger Workflow ปลายทาง)
   // ==========================================
   async moveFile(companyId: number, fileId: number, userId: number, roleId: number, newFolderId: number | null) {
-    // 1. ค้นหาไฟล์และตรวจสอบสถานะ Workflow
     const file = await this.prisma.docFile.findFirst({
       where: { id: fileId, companyId },
       include: { wfRequest: true, folder: true }
@@ -1149,7 +1144,6 @@ async verifyFileIntegrity(companyId: number, fileId: number) {
 
     if (!file) throw new NotFoundException('ไม่พบเอกสารที่ต้องการย้าย');
 
-    // 🛑 บล็อกการย้ายหากไฟล์กำลังติด Workflow อนุมัติค้างอยู่
     if (file.wfRequest && ['PENDING', 'IN_PROGRESS'].includes(file.wfRequest.status)) {
       throw new BadRequestException('ไม่สามารถย้ายไฟล์ได้ เนื่องจากเอกสารนี้กำลังอยู่ในกระบวนการอนุมัติ');
     }
@@ -1158,20 +1152,19 @@ async verifyFileIntegrity(companyId: number, fileId: number) {
       return { message: 'ไฟล์อยู่ในโฟลเดอร์นี้อยู่แล้ว' };
     }
 
-    // --- 🛡️ 2. เช็กสิทธิ์ดึงไฟล์ออกจาก "โฟลเดอร์ต้นทาง" ---
     let hasSourceAccess = false;
     if (roleId === 1) {
       hasSourceAccess = true;
     } else if (file.folder?.isWorkspace) {
-      // 🌟 [แก้บั๊ก] ใช้ hasFolderAccess แทน เพื่อรองรับสิทธิ์แบบ Role และการสืบทอด
-      hasSourceAccess = await this.hasFolderAccess(file.folderId, userId, roleId, 'canDelete');
+      const access = await this.prisma.docFolderAccess.findFirst({
+        where: { folderId: file.folderId as number, userId: userId }
+      });
+      if (access && access.canDelete) hasSourceAccess = true;
     } else {
       if (file.uploadedById === userId) hasSourceAccess = true;
     }
-    
     if (!hasSourceAccess) throw new ForbiddenException('คุณไม่มีสิทธิ์ดึงไฟล์ออกจากโฟลเดอร์ต้นทาง');
 
-    // --- 🛡️ 3. เช็กสิทธิ์เอาไฟล์ไปวางใน "โฟลเดอร์ปลายทาง" ---
     if (newFolderId) {
       const targetFolder = await this.prisma.docFolder.findFirst({
         where: { id: newFolderId, companyId }
@@ -1181,83 +1174,65 @@ async verifyFileIntegrity(companyId: number, fileId: number) {
       let hasTargetAccess = false;
       if (roleId === 1) {
         hasTargetAccess = true;
+      } else if (targetFolder.isWorkspace) {
+        const access = await this.prisma.docFolderAccess.findFirst({
+          where: { folderId: newFolderId, userId: userId }
+        });
+        if (access && (access.canUpload || access.canDelete)) hasTargetAccess = true;
       } else {
-        // 🌟 [แก้บั๊ก] ตรวจสอบสิทธิ์ว่าคนนี้ หรือ Role นี้ (Manager) มีสิทธิ์ Upload ไหม
-        hasTargetAccess = await this.hasFolderAccess(newFolderId, userId, roleId, 'canUpload');
+        const access = await this.prisma.docFolderAccess.findFirst({
+          where: { folderId: newFolderId, userId: userId }
+        });
+        if (access) hasTargetAccess = true;
       }
       
-      if (!hasTargetAccess) throw new ForbiddenException('ไม่สามารถนำไฟล์ไปวางในโฟลเดอร์ปลายทางได้ (คุณต้องมีสิทธิ์ Upload หรือ Manage)');
+      if (!hasTargetAccess) throw new ForbiddenException('คุณไม่มีสิทธิ์นำไฟล์ไปวางในโฟลเดอร์ปลายทาง');
     }
-    
-    // 🔄 4. อัปเดต folderId ปลายทาง (ย้ายไฟล์จริง)
     await this.prisma.docFile.update({
       where: { id: fileId },
       data: { folderId: newFolderId }
     });
 
-    // 🌟 5. ตรวจสอบว่าโฟลเดอร์ปลายทางมีการตั้งค่า Workflow อนุมัติไว้หรือไม่
     let targetWorkflowId = await this.getInheritedWorkflow(newFolderId, companyId, 'UPLOAD');
 
     if (!targetWorkflowId) {
-      // ลองค้นหา Module Mapping กลางของบริษัท
       const mapping = await this.prisma.wfModuleMapping.findFirst({
-        where: { 
-          companyId: companyId, 
-          moduleCode: { in: ['DOC_MOVE', 'DOC_UPLOAD'] }, 
-          isActive: true 
-        },
-        orderBy: { moduleCode: 'asc' } // ให้ความสำคัญกับ DOC_MOVE ก่อน
+        where: { companyId: companyId, moduleCode: 'DOC_UPLOAD', isActive: true }
       });
       if (mapping) targetWorkflowId = mapping.workflowId;
     }
 
-    // 🚀 6. ถ้าโฟลเดอร์ปลายทางมี Workflow -> ให้เตะเข้ากระบวนการอนุมัติใหม่
     if (targetWorkflowId) {
       console.log(`[Move File] โฟลเดอร์ปลายทางมี Workflow ID ${targetWorkflowId} กำลังส่งเรื่องอัตโนมัติ...`);
 
-      // 🤖 ระบบจะวิเคราะห์อัตโนมัติว่าคนย้าย (Manager) มีสิทธิ์อนุมัติไหม 
-      // ถ้ามีอำนาจสุดสาย มันจะ Auto-Approve ให้เลย!
       const request: any = await this.wfRequestService.create(companyId, userId, {
-        moduleCode: 'DOC_MOVE',
+        moduleCode: 'DOC_UPLOAD',
         workflowId: targetWorkflowId,
         businessId: String(fileId),
         topic: `ขออนุมัติเอกสาร (ย้ายโฟลเดอร์): ${file.fileName}`,
       } as any);
 
-      // ถ้าถูก Auto-Approve จนสุดสายไปแล้ว (Fast-Forward ทะลุ)
-      if (request.status === 'APPROVED') {
-          return { 
-             message: 'ย้ายไฟล์สำเร็จ (อนุมัติอัตโนมัติเนื่องจากท่านเป็นผู้มีอำนาจในโฟลเดอร์นี้)',
-             isPendingApproval: false
-          };
-      }
-
-      // ถ้าติดสถานะรออนุมัติ (Manager ไม่ได้มีอำนาจอนุมัติข้ามสาย)
       await this.prisma.docFile.update({
         where: { id: fileId },
         data: { wfRequestId: request.id }
       });
 
       return { 
-        message: 'ส่งเอกสารเข้าสู่กระบวนการอนุมัติของโฟลเดอร์ใหม่เรียบร้อยแล้ว',
-        isPendingApproval: true,
-        wfRequestId: request.id
+        message: 'ย้ายไฟล์สำเร็จ และได้ส่งเอกสารเข้าสู่กระบวนการอนุมัติของโฟลเดอร์ใหม่เรียบร้อยแล้ว',
+        isPendingApproval: true
       };
     }
 
-    // ถ้าโฟลเดอร์ปลายทางไม่บังคับ Workflow เลย
-    return { message: 'ย้ายไฟล์สำเร็จ (ไม่มีการตั้งค่าสายอนุมัติ)', isPendingApproval: false };
+    return { message: 'ย้ายไฟล์สำเร็จ (โฟลเดอร์ปลายทางไม่มีสายอนุมัติ)', isPendingApproval: false };
   }
 
   // 🌟 [NEW] ฟังก์ชันสำหรับให้ AI คัดแยกไฟล์เข้าโฟลเดอร์
   async aiClassifyFileToFolder(companyId: number, fileId: number) {
-    // 1. ดึงข้อมูลไฟล์
     const file = await this.prisma.docFile.findFirst({
       where: { id: fileId, companyId }
     });
     if (!file) throw new NotFoundException('ไม่พบเอกสารที่ต้องการคัดแยก');
 
-    // 2. ดึงรายชื่อโฟลเดอร์ทั้งหมดในบริษัท (เพื่อเป็นตัวเลือกให้ AI)
     const folders = await this.prisma.docFolder.findMany({
       where: { companyId },
       select: { id: true, name: true, description: true }
@@ -1268,13 +1243,12 @@ async verifyFileIntegrity(companyId: number, fileId: number) {
     }
 
     try {
-      // 3. เตรียม Prompt ให้ Gemini AI วิเคราะห์
       const apiKey = process.env.GEMINI_API_KEY;
       if (!apiKey) {
                     throw new InternalServerErrorException('ไม่พบ API Key สำหรับเชื่อมต่อ AI');
         }
       const genAI = new GoogleGenerativeAI(apiKey);
-      const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" }); // ใช้รุ่น Flash เพื่อความรวดเร็ว
+      const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" }); 
       
       const prompt = `
         คุณคือ AI จัดหมวดหมู่เอกสารขององค์กร
@@ -1289,17 +1263,13 @@ async verifyFileIntegrity(companyId: number, fileId: number) {
       const result = await model.generateContent(prompt);
       const responseText = result.response.text().trim();
       
-      // แปลงคำตอบของ AI เป็น Folder ID
       const suggestedFolderId = parseInt(responseText, 10);
-
-      // ตรวจสอบว่า ID ที่ AI แนะนำ มีอยู่จริงหรือไม่
       const validFolder = folders.find(f => f.id === suggestedFolderId);
 
       if (!validFolder) {
         throw new BadRequestException('AI ไม่สามารถหาโฟลเดอร์ที่เหมาะสมได้ในขณะนี้');
       }
 
-      // 4. ทำการย้ายไฟล์ไปยังโฟลเดอร์ที่ AI เลือก
       const updatedFile = await this.prisma.docFile.update({
         where: { id: fileId },
         data: { folderId: suggestedFolderId }
@@ -1318,14 +1288,10 @@ async verifyFileIntegrity(companyId: number, fileId: number) {
   }
 
 
-
-
-
 // ==========================================
   // 📤 1. ส่งไฟล์เข้าสายอนุมัติ (อัปโหลด หรือ Resubmit หลังแก้เอกสาร)
   // ==========================================
   async sendToWorkflow(companyId: number, fileId: number, userId: number) { 
-    // 🌟 1. ดึงข้อมูลไฟล์ และโฟลเดอร์
     const file = await this.prisma.docFile.findFirst({
       where: { id: fileId, companyId },
       include: { 
@@ -1340,10 +1306,8 @@ async verifyFileIntegrity(companyId: number, fileId: number) {
       throw new BadRequestException('เอกสารนี้อยู่ระหว่างการดำเนินการ Workflow อื่นอยู่');
     }
 
-    // 🌟 2. หา Workflow ID แบบสืบทอดจากแฟ้มแม่ (Folder Inheritance)
     let targetWorkflowId = await this.getInheritedWorkflow(file.folderId, companyId, 'UPLOAD');
 
-    // ถ้ายกตระกูลโฟลเดอร์นี้ไม่มีใครตั้งค่าไว้เลย ค่อยไปหาจากส่วนกลางของบริษัท
     if (!targetWorkflowId) {
       const mapping = await this.prisma.wfModuleMapping.findFirst({
         where: { companyId: companyId, moduleCode: 'DOC_UPLOAD', isActive: true }
@@ -1355,8 +1319,6 @@ async verifyFileIntegrity(companyId: number, fileId: number) {
       throw new BadRequestException('ยังไม่ได้ตั้งค่าสายอนุมัติสำหรับเอกสาร (ไม่พบทั้งที่โฟลเดอร์และส่วนกลาง)');
     }
 
-    // 🌟 3. โยนให้ WfRequestService จัดการ
-    // 🌟 Fix: ระบุ Type เป็น any ป้องกัน TS2339 Error
     const request: any = await this.wfRequestService.create(companyId, userId, {
       moduleCode: 'DOC_UPLOAD', 
       workflowId: targetWorkflowId, 
@@ -1364,12 +1326,11 @@ async verifyFileIntegrity(companyId: number, fileId: number) {
       topic: `ขออนุมัติเอกสาร: ${file.fileName}`,
     } as any); 
 
-    // 🌟 4. อัปเดต ID กลับมาที่เอกสาร และปลดล็อกเวลาลบทิ้งอัตโนมัติ
     await this.prisma.docFile.update({
       where: { id: fileId },
       data: { 
         wfRequestId: request.id,
-        autoDeleteAt: null // 🌟 [NEW] รีเซ็ตการลบทิ้ง เผื่อเอกสารนี้เคยถูกตีตก (Reject) มาก่อนหน้านี้
+        autoDeleteAt: null 
       }
     });
 
@@ -1425,7 +1386,6 @@ async verifyFileIntegrity(companyId: number, fileId: number) {
     let usedPromptTokens = 0;
     let usedCompletionTokens = 0;
 
-    // 🌟 3. เรียกใช้งาน AI ของจริง (Real API Call)
     try {
       const apiKey = process.env.GEMINI_API_KEY;
       if (!apiKey) throw new Error('GEMINI_API_KEY is not configured');
@@ -1433,29 +1393,23 @@ async verifyFileIntegrity(companyId: number, fileId: number) {
       const genAI = new GoogleGenerativeAI(apiKey);
       const model = genAI.getGenerativeModel({ model: bot.modelName || 'gemini-2.5-flash' });
 
-      // สั่งให้ AI ประมวลผล
       const result = await model.generateContent(finalPrompt);
       const response = await result.response;
       const text = response.text().trim();
 
-      // สกัดเอาเฉพาะตัวเลขออกมาจากคำตอบ (ป้องกัน AIพิมพ์ข้อความแถมมา)
       const aiChosenId = parseInt(text.replace(/[^0-9]/g, ''), 10);
 
-      // ยืนยันว่าโฟลเดอร์ที่ AI เลือกมีอยู่จริง
       if (folders.some(f => f.id === aiChosenId)) {
         targetFolderId = aiChosenId;
       }
 
-      // ดึงสถิติการใช้ Token
       usedPromptTokens = response.usageMetadata?.promptTokenCount || 0;
       usedCompletionTokens = response.usageMetadata?.candidatesTokenCount || 0;
 
     } catch (error) {
       console.error('❌ AI Routing Error:', error);
-      // ถ้า API ของ Google ล่ม ระบบจะไม่พัง แต่จะวิ่งไปใช้ Fallback ด้านล่างแทน
     }
 
-    // 🛡️ 4. ตาข่ายนิรภัย (Fallback) กรณี AI ไม่ตอบ หรือเกิด Error
     if (!targetFolderId) {
       const fileNameLower = file.fileName.toLowerCase();
       const hintLower = hint ? hint.toLowerCase() : '';
@@ -1472,7 +1426,6 @@ async verifyFileIntegrity(companyId: number, fileId: number) {
       targetFolderId = matchedFolder ? matchedFolder.id : folders[0].id;
     }
 
-    // 🌟 5. บันทึกการหัก Token ลงฐานข้อมูล
     if (usedPromptTokens > 0 || usedCompletionTokens > 0) {
       try {
         await this.aiQuotasService.recordUsage({
@@ -1485,11 +1438,9 @@ async verifyFileIntegrity(companyId: number, fileId: number) {
         });
       } catch (quotaError) {
         console.error('❌ Failed to deduct tokens:', quotaError);
-        // เลือกได้ว่าจะ throw error คืนไป หรือจะปล่อยผ่านให้ย้ายไฟล์ต่อ
       }
     }
 
-    // 6. บันทึกการย้ายโฟลเดอร์ลงฐานข้อมูล
     await this.prisma.docFile.update({
       where: { id: fileId },
       data: { folderId: targetFolderId }
@@ -1502,7 +1453,7 @@ async verifyFileIntegrity(companyId: number, fileId: number) {
       botName: bot.name,
       processedFile: file.fileName,
       targetFolder: targetFolderName,
-      tokensUsed: usedPromptTokens + usedCompletionTokens, // ส่งยอด Token กลับไปโชว์หน้าบ้านได้
+      tokensUsed: usedPromptTokens + usedCompletionTokens, 
       aiFeedback: `ย้ายเข้า "${targetFolderName}" สำเร็จ`
     };
   }
@@ -1521,7 +1472,6 @@ async verifyFileIntegrity(companyId: number, fileId: number) {
         uploadedBy: { select: { id: true, username: true } },
         accessRoles: true,
         versions: { orderBy: { version: 'desc' }, take: 1 },
-        // 🌟 [UPDATE] เปลี่ยนจากแค่ true เป็นการดึง currentNode มาด้วย เพื่อเอาชื่อ Step
         wfRequest: {
           include: {
             currentNode: true 
@@ -1533,20 +1483,16 @@ async verifyFileIntegrity(companyId: number, fileId: number) {
 
     return files.map(file => {
       const isLockedByPassword = !!file.filePassword; 
-      // เช็กว่าไฟล์นี้กำลังรออนุมัติอยู่หรือไม่
       const isPendingApproval = file.wfRequest && ['PENDING', 'IN_PROGRESS'].includes(file.wfRequest.status);
-
-      // กฎเหล็ก: ถ้าติดรหัสผ่าน หรือ รออนุมัติอยู่ = ห้ามให้ URL ไปเด็ดขาด!
       const shouldHideUrl = isLockedByPassword || isPendingApproval;
 
       return {
         ...file,
-        filePassword: undefined, // ซ่อนรหัสผ่านไม่ให้พ่นกลับไปหน้าบ้าน
+        filePassword: undefined, 
         isLocked: isLockedByPassword,
         isPendingApproval: isPendingApproval, 
         currentUrl: shouldHideUrl ? null : file.currentUrl, 
         
-        // 🌟 [NEW] เพิ่ม 2 บรรทัดนี้ เพื่อส่งข้อมูลไปทำ Badge สีๆ ที่หน้าบ้าน
         workflowStatus: file.wfRequest ? file.wfRequest.status : null,
         pendingStepName: isPendingApproval && file.wfRequest?.currentNode ? file.wfRequest.currentNode.nodeName : null,
 
@@ -1561,7 +1507,7 @@ async verifyFileIntegrity(companyId: number, fileId: number) {
  // ==========================================
   // 🌟 [แก้ไข] อัปเดตสิทธิ์ไฟล์ (รับ Rules ที่มีทั้ง Role และ User)
   // ==========================================
-  async updateFileAccess(companyId: number, fileId: number, dto: any) { // ใช้ dto.rules
+  async updateFileAccess(companyId: number, fileId: number, dto: any) { 
     const file = await this.prisma.docFile.findFirst({
       where: { id: fileId, companyId: companyId },
       select: { companyId: true }
@@ -1600,21 +1546,15 @@ async verifyFileIntegrity(companyId: number, fileId: number) {
     });
 
     if (!file) throw new NotFoundException('ไม่พบเอกสาร');
-
-    // 🌟 ใช้ฟังก์ชัน Tree Climbing แบบ While Loop เพื่อประสิทธิภาพที่ดีกว่าในการเช็กสาย Workspace
     const isWorkspaceTree = await this.checkIsWorkspaceTree(file.folderId);
 
-    // --- 🛡️ ด่านที่ 1: ตรวจสอบสิทธิ์การลบ (Access Control) ตามโครงสร้างสิทธิ์จริง ---
     let hasAccess = false;
     
     if (userId === 0) { 
-      // ระบบ (Retention Policy) ให้สิทธิ์เข้าถึงเสมอสำหรับการประมวลผลอัตโนมัติของ Cron Job
       hasAccess = true;
     } else if (isWorkspaceTree) {
-      // 🏛️ กรณีอยู่ภายใต้สาย Workspace: บังคับเช็กสิทธิ์ canDelete จากตารางสิทธิ์โฟลเดอร์โดยตรง (ทำงานตามที่กำหนดหน้าบ้าน 100%)
       hasAccess = await this.hasFolderAccess(file.folderId, userId, roleId, 'canDelete');
     } else {
-      // 📁 กรณีไม่ใช่สาย Workspace (Personal/Private): เป็นเจ้าของไฟล์ หรือได้รับสิทธิ์ canDelete ในโฟลเดอร์นั้น
       if (file.uploadedById === userId) {
         hasAccess = true;
       } else if (file.folderId) {
@@ -1626,7 +1566,6 @@ async verifyFileIntegrity(companyId: number, fileId: number) {
       throw new ForbiddenException('คุณไม่มีสิทธิ์ลบเอกสารนี้ (สิทธิ์ใน Workspace ถูกระงับ หรือไม่มีสิทธิ์ลบในโฟลเดอร์นี้)');
     }
 
-    // --- 🛑 ด่านที่ 2: ตรวจสอบสถานะ Workflow ที่กำลังดำเนินการค้างอยู่ ---
     if (userId !== 0 && file.wfRequest && ['PENDING', 'IN_PROGRESS'].includes(file.wfRequest.status)) {
       throw new BadRequestException('ไม่สามารถลบได้เนื่องจากเอกสารนี้กำลังอยู่ในกระบวนการอนุมัติอื่นอยู่');
     }
@@ -1643,12 +1582,11 @@ async verifyFileIntegrity(companyId: number, fileId: number) {
         where: { requestId: file.wfRequest.id, action: 'PENDING' },
         data: { 
           action: 'CANCELLED', 
-          comment: 'System Auto-Delete: เอกสารถูกลบอัตโนมัติตามกำหนดเวลา คำร้องนี้จึงถูกยกเลิกโดยระบบ' 
+          comment: 'System Auto-Delete: เอกสูกลบอัตโนมัติตามกำหนดเวลา คำร้องนี้จึงถูกยกเลิกโดยระบบ' 
         }
       });
     }
 
-    // --- 🚀 ด่านที่ 3: ตรวจสอบและเลือกสายอนุมัติการทำลายเอกสาร (Workflow Selection) ---
     let targetDeleteWorkflowId = await this.getInheritedWorkflow(file.folderId, companyId, 'DELETE');
 
     if (!targetDeleteWorkflowId) {
@@ -1658,17 +1596,13 @@ async verifyFileIntegrity(companyId: number, fileId: number) {
       if (mapping) targetDeleteWorkflowId = mapping.workflowId;
     }
 
-    // จัดการเงื่อนไข Workspace และการยิง Workflow
     if (isWorkspaceTree) {
-      // ถ้าเป็นสาย Workspace และไม่มีการตั้งค่า Workflow เลย ให้ Error ทันทีเพื่อความปลอดภัยของส่วนรวม
       if (!targetDeleteWorkflowId && userId !== 0) {
         throw new BadRequestException('เอกสารนี้อยู่ภายใต้ Workspace (คลังเอกสารกลาง) จำเป็นต้องได้รับการอนุมัติก่อนทำลาย กรุณาตั้งค่า "สายอนุมัติการทำลายเอกสาร (DOC_DELETE)" ที่โฟลเดอร์หรือตั้งค่าส่วนกลางก่อนดำเนินการ');
       }
     }
 
-    // ส่งเข้าสายอนุมัติลบเอกสาร (ถ้าพบ Workflow และเป็นการลบโดยผู้ใช้)
     if (targetDeleteWorkflowId && userId !== 0) {
-      // 🌟 Fix: ระบุ Type เป็น any ป้องกัน TS2339 Error
       const request: any = await this.wfRequestService.create(companyId, userId, {
         moduleCode: 'DOC_DELETE',
         workflowId: targetDeleteWorkflowId,
@@ -1687,7 +1621,6 @@ async verifyFileIntegrity(companyId: number, fileId: number) {
       };
     }
 
-    // --- 🧹 ด่านที่ 4: Hard Delete ลบไฟล์จริง (กรณีไม่มี Workflow หรือเป็นระบบสั่งลบอัตโนมัติ) ---
     try {
       for (const ver of file.versions) {
         await this.storageService.restoreQuota(companyId, ver.url);
@@ -1747,7 +1680,6 @@ async verifyFileIntegrity(companyId: number, fileId: number) {
     return versions.map(v => ({
       ...v,
       size: v.size.toString(), 
-      // 🌟 [NEW] ซ่อน URL ในประวัติเวอร์ชันด้วย ถ้าไฟล์หลักถูกล็อกรหัสผ่าน
       url: file.filePassword ? null : v.url
     }));
   }
@@ -1761,11 +1693,9 @@ async verifyFileIntegrity(companyId: number, fileId: number) {
   private async getInheritedWorkflow(folderId: any, companyId: number, type: 'UPLOAD' | 'DELETE'): Promise<number | null> {
     if (!folderId) return null;
     
-    // 🌟 [Fix สำคัญ] แปลง String เป็น Number ป้องกัน Prisma Error จาก FormData ของหน้าบ้าน
     let currentFolderId: number | null = Number(folderId);
     if (isNaN(currentFolderId) || currentFolderId === 0) return null;
 
-    // ปีนขึ้นไปตาม Tree จนกว่าจะถึง Root Folder หรือจนกว่าจะเจอ Workflow
     while (currentFolderId) {
       const folder = await this.prisma.docFolder.findUnique({
         where: { id: currentFolderId },
@@ -1778,18 +1708,16 @@ async verifyFileIntegrity(companyId: number, fileId: number) {
       
       if (!folder) break;
 
-      // 🚀 ลอจิกใหม่ตามที่คุณกฤษฎาอธิบาย: ขอแค่มีการผูก Workflow ID ไว้ ก็สั่งทำงานทันที!
       const targetWfId = type === 'UPLOAD' ? folder.defaultWorkflowId : folder.deleteWorkflowId;
 
       if (targetWfId) {
-        return targetWfId; // เจอแล้ว คืนค่ารหัส Workflow ให้ระบบเอาไปเดินเรื่องทันที
+        return targetWfId; 
       }
 
-      // ถ้าโฟลเดอร์นี้ไม่ได้เลือก Workflow ไว้ ให้ปีนไปถามแฟ้มแม่ (Parent Folder) ต่อ
       currentFolderId = folder.parentId; 
     }
     
-    return null; // ปีนจนสุด Root Folder แล้ว ไม่มีแฟ้มไหนในสายนี้ผูก Workflow ไว้เลย
+    return null; 
   }
 
 
@@ -1806,15 +1734,11 @@ async verifyFileIntegrity(companyId: number, fileId: number) {
       });
       
       if (!folder) break;
-      
-      // ถ้าเจอว่าโฟลเดอร์ไหนในสายเป็น Workspace ให้คืนค่า true ทันที
       if (folder.isWorkspace) return true; 
 
-      // ถ้ายังไม่เจอ ให้ปีนขึ้นไปเช็กที่แฟ้มแม่ถัดไป
       currentFolderId = folder.parentId; 
     }
     
-    // ปีนจนสุด Root แล้วไม่เจอ Workspace เลย
     return false; 
   }
 
