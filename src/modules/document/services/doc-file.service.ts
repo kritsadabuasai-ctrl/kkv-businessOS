@@ -32,6 +32,50 @@ export class DocFileService {
   ) {}
 
 
+  // =========================================================
+  // 🛡️ คำนวณ SHA-256 Hash ของไฟล์
+  // =========================================================
+  private calculateFileHash(buffer: Buffer): string {
+    return crypto.createHash('sha256').update(buffer).digest('hex');
+  }
+
+  // =========================================================
+  // 🛡️ ฟังก์ชันตรวจสอบความแท้จริงของเอกสาร (Tamper-Proof Check)
+  // =========================================================
+  async verifyDocumentAuthenticity(companyId: number, fileBuffer: Buffer) {
+    // 1. คำนวณลายนิ้วมือ (Hash) ของไฟล์ที่อัปโหลดเข้ามาตรวจสอบ
+    const uploadedHash = this.calculateFileHash(fileBuffer);
+
+    // 2. ค้นหาในประวัติการส่งออกไฟล์
+    const traceLog = await this.prisma.logDocumentTrace.findFirst({
+      where: { fileHash: uploadedHash, companyId },
+      include: {
+        originalFile: { select: { fileName: true } },
+        downloadedBy: { select: { fullName: true, username: true } } // ปรับฟิลด์ให้ตรงกับตาราง User ของคุณ
+      }
+    });
+
+    // 3. ถ้าไม่เจอ แปลว่าไฟล์ถูกแก้ หรือไม่ได้โหลดจากระบบ
+    if (!traceLog) {
+      return {
+        isAuthentic: false,
+        message: '❌ ไฟล์นี้อาจถูกดัดแปลงแก้ไข หรือไม่ได้เป็นไฟล์ที่ออกจากระบบโดยตรง',
+      };
+    }
+
+    // 4. ถ้าเจอ ตรงกันเป๊ะ 100%
+    return {
+      isAuthentic: true,
+      message: '✅ ไฟล์แท้ 100% (Original Document)',
+      details: {
+        originalFileName: traceLog.originalFile.fileName,
+        downloadedBy: traceLog.downloadedBy?.fullName || traceLog.downloadedBy?.username,
+        downloadedAt: traceLog.downloadedAt, // วันเวลาที่โหลดออกไป
+        documentHash: traceLog.fileHash
+      }
+    };
+  }
+
  // ==========================================
   // 🛡️ [SharePoint Core] ฟังก์ชันตรวจสอบสิทธิ์โฟลเดอร์แบบสืบทอดลำดับขั้น
   // ==========================================
@@ -703,7 +747,7 @@ async verifyFileIntegrity(companyId: number, fileId: number) {
 
 
   // ==========================================
-  // 📄 [ฟังก์ชันเต็ม] ดูไฟล์ผ่าน Proxy (SharePoint Access Control + ลายน้ำเฉพาะ PDF + Workflow Guard)
+  // 📄 [ฟังก์ชันเต็ม] ดูไฟล์ผ่าน Proxy (SharePoint Access Control + ลายน้ำเฉพาะ PDF + Workflow Guard + Tamper-Proof)
   // ==========================================
   async viewFile(companyId: number, fileId: number, userId: number, roleId: number, isHQ: boolean = false) {
     // 🌟 [UPDATE] ดึงไฟล์พร้อมข้อมูลโฟลเดอร์, workflow, และประวัติเวอร์ชันทั้งหมดเพื่อใช้คุมสิทธิ์
@@ -779,8 +823,22 @@ async verifyFileIntegrity(companyId: number, fileId: number) {
       const watermarkText = `CONFIDENTIAL  |  User ID: ${userId}  |  Date: ${timestamp}`;
       const processedFileBytes = await this.applyWatermark(fileBuffer, mimeType, watermarkText, userId);
 
+      // 🛡️ [TAMPER-PROOF] แปลงเป็น Buffer และคำนวณ SHA-256 Hash
+      const finalBuffer = Buffer.from(processedFileBytes);
+      const fileHash = crypto.createHash('sha256').update(finalBuffer).digest('hex');
+
+      // 📝 บันทึกประวัติลายนิ้วมือดิจิทัลของไฟล์ฉบับนี้ลงระบบ
+      await this.prisma.logDocumentTrace.create({
+        data: {
+          companyId,
+          fileHash,
+          originalFileId: fileId,
+          downloadedById: userId,
+        }
+      });
+
       return {
-        fileStream: new StreamableFile(Buffer.from(processedFileBytes)),
+        fileStream: new StreamableFile(finalBuffer),
         mimeType: mimeType,
         fileName: file.fileName
       };
@@ -790,8 +848,8 @@ async verifyFileIntegrity(companyId: number, fileId: number) {
     }
   }
 
- // ==========================================
-  // 📥 [ฟังก์ชันเต็ม] ดาวน์โหลดไฟล์ (SharePoint Access Control + ลายน้ำสำหรับ PDF + Workflow Guard)
+  // ==========================================
+  // 📥 [ฟังก์ชันเต็ม] ดาวน์โหลดไฟล์ (SharePoint Access Control + ลายน้ำสำหรับ PDF + Workflow Guard + Tamper-Proof)
   // ==========================================
   async downloadFile(companyId: number, fileId: number, userId: number, roleId: number, isHQ: boolean = false) {
     // 🌟 [UPDATE] ดึงไฟล์พร้อมข้อมูลโฟลเดอร์, workflow, และประวัติเวอร์ชันทั้งหมดเพื่อใช้คุมสิทธิ์
@@ -864,8 +922,22 @@ async verifyFileIntegrity(companyId: number, fileId: number) {
       const watermarkText = `RESTRICTED COPY - DOWNLOADED  |  User ID: ${userId}  |  Date: ${timestamp}`;
       const processedFileBytes = await this.applyWatermark(fileBuffer, mimeType, watermarkText, userId);
 
+      // 🛡️ [TAMPER-PROOF] แปลงเป็น Buffer และคำนวณ SHA-256 Hash
+      const finalBuffer = Buffer.from(processedFileBytes);
+      const fileHash = crypto.createHash('sha256').update(finalBuffer).digest('hex');
+
+      // 📝 บันทึกประวัติลายนิ้วมือดิจิทัลของไฟล์ฉบับนี้ลงระบบ
+      await this.prisma.logDocumentTrace.create({
+        data: {
+          companyId,
+          fileHash,
+          originalFileId: fileId,
+          downloadedById: userId,
+        }
+      });
+
       return {
-        fileStream: new StreamableFile(Buffer.from(processedFileBytes)),
+        fileStream: new StreamableFile(finalBuffer),
         mimeType: mimeType,
         fileName: file.fileName
       };
@@ -945,7 +1017,7 @@ async verifyFileIntegrity(companyId: number, fileId: number) {
   }
 
  // ==========================================
-  // 💎 [ฟังก์ชันเต็ม] ดาวน์โหลดเอกสารต้นฉบับแบบไม่มีลายน้ำ (Strict SharePoint + Workflow Guard)
+  // 💎 [ฟังก์ชันเต็ม] ดาวน์โหลดเอกสารต้นฉบับแบบไม่มีลายน้ำ (Strict SharePoint + Workflow Guard + Tamper-Proof)
   // ==========================================
   async downloadOriginalFile(companyId: number, fileId: number, userId: number, roleId: number, isHQ: boolean = false) {
     const file = await this.prisma.docFile.findFirst({
@@ -990,9 +1062,23 @@ async verifyFileIntegrity(companyId: number, fileId: number) {
 
     try {
       const response = await axios.get(targetUrl, { responseType: 'arraybuffer' });
+      const originalBuffer = Buffer.from(response.data);
+
+      // 🛡️ [TAMPER-PROOF] คำนวณ SHA-256 Hash ของไฟล์ต้นฉบับ
+      const fileHash = crypto.createHash('sha256').update(originalBuffer).digest('hex');
+
+      // 📝 บันทึกประวัติว่าใครโหลดไฟล์ "ต้นฉบับ" (Hash นี้) ออกไป
+      await this.prisma.logDocumentTrace.create({
+        data: {
+          companyId,
+          fileHash,
+          originalFileId: fileId,
+          downloadedById: userId,
+        }
+      });
       
       return {
-        fileStream: new StreamableFile(Buffer.from(response.data)),
+        fileStream: new StreamableFile(originalBuffer),
         mimeType: file.fileExtension || 'application/octet-stream',
         fileName: file.fileName
       };

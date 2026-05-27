@@ -1,9 +1,12 @@
 import { 
   Controller, Post, Get, Put, Delete, Body, Param, 
-  ParseIntPipe, Query, UseGuards, Req, BadRequestException  ,Request
+  ParseIntPipe, Query, UseGuards, Req, BadRequestException  ,Request ,UseInterceptors, UploadedFile
 } from '@nestjs/common';
 import { ApiTags, ApiBearerAuth, ApiOperation } from '@nestjs/swagger';
 import { DocFileService } from '../services/doc-file.service';
+
+
+import { FileInterceptor } from '@nestjs/platform-express';
 
 // DTOs
 import { UploadFileDto } from '../dto/upload-file.dto';
@@ -166,6 +169,28 @@ export class DocFileController {
     );
   }
 
+
+  // ==========================================
+  // 🛡️ [NEW] Endpoint สำหรับตรวจสอบความแท้จริงของเอกสาร (Tamper-Proof)
+  // ==========================================
+  @ApiOperation({ summary: 'ตรวจสอบความถูกต้องของไฟล์ PDF ว่าถูกดัดแปลงหรือไม่ (Tamper-Proof Check)' })
+  @Post('verify-authenticity')
+  @UseInterceptors(FileInterceptor('file')) // รับข้อมูลแบบ multipart/form-data โดยใช้ key ชื่อ 'file'
+  async verifyDocumentAuthenticity(
+    @Req() req: any,
+    @UploadedFile() file: Express.Multer.File
+  ) {
+    // 1. ตรวจสอบว่ามีการแนบไฟล์มาหรือไม่
+    if (!file) {
+      throw new BadRequestException('กรุณาอัปโหลดไฟล์ PDF ที่ต้องการตรวจสอบ');
+    }
+
+    // 2. ส่ง Buffer ของไฟล์ไปให้ Service คำนวณ Hash และตรวจสอบ
+    return this.docFileService.verifyDocumentAuthenticity(
+      req.user.companyId, 
+      file.buffer
+    );
+  }
 
   // ==========================================
   // 2. ระบบ Versioning & Metadata
