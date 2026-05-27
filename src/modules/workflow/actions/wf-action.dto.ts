@@ -11,8 +11,8 @@ export enum ActionType {
 }
 
 export class CreateWfActionDto {
+  @IsOptional() // ให้เป็น Optional เพื่อให้ ValidationPipe ไม่บล็อกตอนหน้าบ้านยิงมา (เพราะส่งผ่าน Path)
   @IsInt()
-  @IsNotEmpty()
   requestId!: number;
 
   @IsEnum(ActionType)

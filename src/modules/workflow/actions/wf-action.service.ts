@@ -19,14 +19,18 @@ export class WfActionService {
   // =========================================================
   async create(companyId: number, userId: number, dto: CreateWfActionDto) {
 
-   // 🚨 1. เพิ่มโค้ดเรดาร์จับผิดตรงนี้เลยครับ! 🚨
+   const requestId = dto.requestId;
+    if (!requestId) {
+      throw new BadRequestException('ไม่พบรหัสคำร้องขอ (requestId)');
+    }
+
     console.log(`\n=============================================`);
     console.log(`🚨 [DEBUG WORKFLOW] มีคนกดปุ่ม!`);
-    console.log(`🚨 คำร้อง ID: ${dto.requestId} | Action ที่ส่งมาคือ: ${dto.action}`);
+    console.log(`🚨 คำร้อง ID: ${requestId} | Action: ${dto.action}`);
     console.log(`=============================================\n`);
 
     const request = await this.prisma.wfRequest.findFirst({
-      where: { id: dto.requestId, companyId },
+      where: { id: requestId, companyId },
       include: { currentNode: true, requester: true }
     });
 
@@ -215,28 +219,28 @@ export class WfActionService {
     // 🔙 7. ระบบตีกลับให้แก้ไข (SEND_BACK) ** [อัปเดตใหม่ ป้องกัน Auto-Approve] **
     // ==================================================================
     else if (dto.action === ActionType.SEND_BACK) {
-      // ยกเลิก PENDING ทั้งหมดที่ค้างอยู่ในโหนดปัจจุบัน
+      // 1. ยกเลิก PENDING ทั้งหมดที่ค้างอยู่ในโหนดปัจจุบัน
       await this.prisma.wfAction.updateMany({
         where: { requestId: request.id, action: 'PENDING' },
         data: { action: 'CANCELLED', comment: 'ถูกยกเลิกเนื่องจากคำร้องถูกตีกลับให้แก้ไข' } 
       });
 
       const allNodes = await this.prisma.wfNode.findMany({ where: { workflowId: request.workflowId } });
+      
+      // 2. หาโหนดก่อนหน้า (ใช้ Optional Chaining ป้องกัน Error)
       let previousNodeId = request.currentNode?.nextRejectId;
       
-      // หาโหนดก่อนหน้าแบบอัตโนมัติ
       if (!previousNodeId) {
          const fallbackNode = allNodes.find(n => n.nextApproveId === request.currentNodeId);
          if (fallbackNode) {
              previousNodeId = fallbackNode.id;
          } else if (request.currentNode?.stepOrder && request.currentNode.stepOrder > 1) {
-             const currentStepOrder = request.currentNode.stepOrder;
-             const fallbackByOrder = allNodes.find(n => n.stepOrder === currentStepOrder - 1);
+             const fallbackByOrder = allNodes.find(n => n.stepOrder === (request.currentNode?.stepOrder || 0) - 1);
              if (fallbackByOrder) previousNodeId = fallbackByOrder.id;
          }
       }
 
-      // 🌟 เคสที่ 1: ตีกลับจนสุดทาง คืนถึงมือคนขอเรื่อง
+      // 3. ตีกลับจนสุดทาง (REJECTED)
       if (!previousNodeId) {
          await this.prisma.wfRequest.update({
            where: { id: request.id },
@@ -251,21 +255,19 @@ export class WfActionService {
             }
          });
       } 
-      // 🌟 เคสที่ 2: ถอยหลังไปโหนดก่อนหน้า (เรียกใช้ assignApprovers เพื่อดัก Auto-Approve)
+      // 4. ถอยกลับไปโหนดก่อนหน้าแบบมีเงื่อนไข (ระงับ Auto-Approve)
       else {
          const targetNode = allNodes.find(n => n.id === previousNodeId);
+         if (!targetNode) throw new NotFoundException('ไม่พบขั้นตอนก่อนหน้าในระบบ');
 
          await this.prisma.wfRequest.update({
            where: { id: request.id },
            data: { currentNodeId: previousNodeId, status: WorkflowStatus.IN_PROGRESS } 
          });
 
-         // แปลง data ก่อนส่งต่อ (ป้องกัน error กรณีข้อมูลเป็น String)
-         const requestData = request.data ? (typeof request.data === 'string' ? JSON.parse(request.data) : request.data) : {};
+         // แปลง data ก่อนส่งต่อ (ป้องกัน Error กรณีข้อมูลเป็น String)
+         const requestData = typeof request.data === 'string' ? JSON.parse(request.data || '{}') : (request.data || {});
 
-         // 🎯 เรียกใช้ assignApprovers แทนการสร้าง PENDING แบบ Manual
-         // การส่ง `true` (isSendBack) จะไประงับลอจิก Auto-Approve อัตโนมัติ 
-         // และแจกกล่อง PENDING ให้ทั้ง Manager 1 และ Manager 2 พร้อมกัน
          await this.wfRequestService.assignApprovers(
             request.id, 
             targetNode, 
@@ -273,7 +275,7 @@ export class WfActionService {
             companyId, 
             requestData, 
             allNodes, 
-            true // 🛑 โยน Flag isSendBack = true
+            true // 🛑 Flag `isSendBack = true` นี้สำคัญที่สุด
          );
       }
     }
