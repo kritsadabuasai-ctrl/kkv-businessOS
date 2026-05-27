@@ -133,23 +133,32 @@ export class WfActionService {
       return { message: 'บันทึกคอมเมนต์สำเร็จ' };
     }
 
-    // 🛑 BLOCKER: ตรวจสอบสถานะ Ad-hoc (ห้ามอนุมัติถ้ารอที่ปรึกษา)
-    if ([ActionType.APPROVE, ActionType.REJECT, ActionType.SEND_BACK].includes(dto.action)) {
-      const pendingAdhocUsers = await this.prisma.wfAction.findMany({
-        where: { requestId: request.id, stepName: request.currentNode?.nodeName, isAdhoc: true, action: 'PENDING', invitedById: userId },
-        include: { actor: { select: { fullName: true, username: true } } }
-      });
+   // 🛑 BLOCKER: ตรวจสอบสถานะ Ad-hoc (เฉพาะที่ปรึกษาที่เจ้าตัวเชิญ และบังคับรอ)
+if ([ActionType.APPROVE, ActionType.REJECT, ActionType.SEND_BACK].includes(dto.action)) {
+  
+  // เช็คแค่ Action ที่เป็น AD_HOC_INVITE + PENDING + มีข้อความ Blocking
+  const blockingAdhocConsultants = await this.prisma.wfAction.findMany({
+    where: { 
+      requestId: request.id, 
+      stepName: request.currentNode?.nodeName, 
+      isAdhoc: true, 
+      action: 'PENDING', 
+      invitedById: userId, // ✅ ดักแค่ที่ User คนนี้เป็นคนเชิญ
+      comment: { contains: '[ส่งคำเชิญปรึกษา (รอคำตอบ)]' } // ✅ ดักแค่รายการที่ตั้งค่าเป็น Blocking เท่านั้น
+    },
+    include: { actor: { select: { fullName: true, username: true } } }
+  });
 
-      if (pendingAdhocUsers.length > 0) {
-        const myInviteHistory = await this.prisma.wfAction.findMany({ where: { requestId: request.id, actorId: userId, action: 'AD_HOC_INVITE' }, orderBy: { createdAt: 'desc' } });
-        const blockingUsers = pendingAdhocUsers.filter(pendingUser => myInviteHistory.some(history => history.comment?.includes('[ส่งคำเชิญปรึกษา (รอคำตอบ)]')));
-
-        if (blockingUsers.length > 0) {
-           const pendingNames = blockingUsers.map(u => u.actor.fullName || u.actor.username).join(', ');
-           throw new BadRequestException(`ต้องรอให้ที่ปรึกษา (${pendingNames}) ส่งความเห็นให้ครบก่อน`);
-        }
-      }
-    }
+  if (blockingAdhocConsultants.length > 0) {
+    const pendingNames = blockingAdhocConsultants
+      .map(u => u.actor.fullName || u.actor.username)
+      .join(', ');
+      
+    throw new BadRequestException(
+      `คุณได้ส่งคำเชิญให้ที่ปรึกษา (${pendingNames}) พิจารณาแบบบังคับรอ (Blocking) อยู่ กรุณารอความเห็นจากที่ปรึกษาของท่านก่อนดำเนินการต่อครับ`
+    );
+  }
+}
 
     // 🖋️ 3. ตรวจสอบ Digital Signature
     if (request.currentNode?.requireSignature && dto.action === ActionType.APPROVE) {
