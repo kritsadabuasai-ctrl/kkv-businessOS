@@ -8,18 +8,15 @@ import { WfRequestService } from '../requests/wf-request.service';
 export class WfActionService {
   constructor(
     private readonly prisma: PrismaService,
-    
-    // 🌟 เติม Inject forwardRef ตรงนี้!
     @Inject(forwardRef(() => WfRequestService))
     private readonly wfRequestService: WfRequestService
   ) {}
 
-// =========================================================
-  // 🌟 ฟังก์ชันหลัก: ประมวลผลการกระทำ (ตัวเต็ม + แก้บั๊ก SEND_BACK ทะลุ)
+  // =========================================================
+  // 🌟 ฟังก์ชันหลัก: ประมวลผลการกระทำ (รองรับทุก Rule)
   // =========================================================
   async create(companyId: number, userId: number, dto: CreateWfActionDto) {
-
-   const requestId = dto.requestId;
+    const requestId = dto.requestId;
     if (!requestId) {
       throw new BadRequestException('ไม่พบรหัสคำร้องขอ (requestId)');
     }
@@ -76,14 +73,14 @@ export class WfActionService {
       await this.prisma.wfRequest.update({ where: { id: request.id }, data: { currentNodeId: targetNode.id, status: WorkflowStatus.IN_PROGRESS } });
 
       const allNodes = workflow?.nodes || [];
-      const requestData = request.data ? (typeof request.data === 'string' ? JSON.parse(request.data) : request.data) : {};
+      const requestData = typeof request.data === 'string' ? JSON.parse(request.data || '{}') : (request.data || {});
       await this.wfRequestService.assignApprovers(request.id, targetNode, request.requesterId, companyId, requestData, allNodes);
 
       return { message: 'ดึงเรื่องกลับสำเร็จ ขั้นตอนถูกรีเซ็ตและส่งให้ทุกคนพิจารณาใหม่อีกครั้ง' };
     }
 
     // 🛡️ 2. ตรวจสอบสิทธิ์ (รองรับ Delegation - ทำแทน)
-    const validationResult = await this.validateApprover(userId, dto.requestId, isSystemBot);
+    const validationResult = await this.validateApprover(userId, requestId, isSystemBot);
     let delegateComment = '';
     let targetActorIdToClear = userId; 
 
@@ -136,7 +133,7 @@ export class WfActionService {
       return { message: 'บันทึกคอมเมนต์สำเร็จ' };
     }
 
-    // 🛑 BLOCKER: ตรวจสอบสถานะ Ad-hoc
+    // 🛑 BLOCKER: ตรวจสอบสถานะ Ad-hoc (ห้ามอนุมัติถ้ารอที่ปรึกษา)
     if ([ActionType.APPROVE, ActionType.REJECT, ActionType.SEND_BACK].includes(dto.action)) {
       const pendingAdhocUsers = await this.prisma.wfAction.findMany({
         where: { requestId: request.id, stepName: request.currentNode?.nodeName, isAdhoc: true, action: 'PENDING', invitedById: userId },
@@ -172,62 +169,81 @@ export class WfActionService {
     const stepNameForHistory = request.currentNode?.nodeName || `ขั้นตอนที่ ${request.currentNode?.stepOrder || 'ไม่ระบุ'}`;
     await this.saveActionHistory({ ...dto, comment: dto.comment ? dto.comment + delegateComment : delegateComment.trim() }, userId, stepNameForHistory);
 
-    // 5. ลบสถานะ PENDING ของเจ้าของงาน
+    // 5. ลบสถานะ PENDING ของเจ้าของงาน และ เคลียร์ AD_HOC_INVITE ที่คนนี้ส่งเชิญไปแต่เขาไม่ตอบให้ทิ้งไปเลย (ไม่ต้องรอแล้ว)
     await this.prisma.wfAction.deleteMany({
-      where: { requestId: request.id, action: 'PENDING', OR: [{ actorId: targetActorIdToClear }, { isAdhoc: true, invitedById: userId }] } as any
+      where: { 
+        requestId: request.id, 
+        action: 'PENDING', 
+        OR: [{ actorId: targetActorIdToClear }, { isAdhoc: true, invitedById: userId }] 
+      } as any
     });
 
     const voteRule = request.currentNode?.voteRule || 'ANY_APPROVE';
 
     // ==================================================================
-    // 🚦 6. การหาทิศทางถัดไป (Routing)
+    // 🚦 6. การหาทิศทางถัดไป (Routing Based on Voting Rules)
     // ==================================================================
-    if (dto.action === ActionType.APPROVE) {
-      if (voteRule === 'CUSTOM_PERCENTAGE') {
-        const totalVoters = await this.prisma.wfAction.count({ where: { requestId: request.id, stepName: stepNameForHistory, isAdhoc: false } as any });
-        const approvedVoters = await this.prisma.wfAction.count({ where: { requestId: request.id, stepName: stepNameForHistory, action: 'APPROVE', isAdhoc: false } as any });
-        const threshold = request.currentNode?.voteThreshold || 50; 
-        const currentPercent = totalVoters > 0 ? (approvedVoters / totalVoters) * 100 : 100;
 
-        if (currentPercent >= threshold) await this.prisma.wfAction.updateMany({ where: { requestId: request.id, action: 'PENDING' }, data: { action: 'CANCELLED', comment: `ถูกยกเลิกเนื่องจากมติโหวตผ่านเกณฑ์แล้ว` } });
-        else return { message: `บันทึกเสียงโหวตแล้ว (ปัจจุบัน ${currentPercent.toFixed(2)}% ต้องการ ${threshold}%)` };
+    // 📊 นับคะแนนเสียงสำหรับคำนวณ (ใช้สำหรับ CUSTOM_PERCENTAGE และ ALL_MUST_APPROVE)
+    const approvedCount = await this.prisma.wfAction.count({ where: { requestId, stepName: stepNameForHistory, action: 'APPROVE', isAdhoc: false } as any });
+    const rejectedCount = await this.prisma.wfAction.count({ where: { requestId, stepName: stepNameForHistory, action: 'REJECT', isAdhoc: false } as any });
+    const pendingCount = await this.prisma.wfAction.count({ where: { requestId, stepName: stepNameForHistory, action: 'PENDING', isAdhoc: false } as any });
+    const totalVoters = approvedCount + rejectedCount + pendingCount;
+    const threshold = request.currentNode?.voteThreshold || 50; 
+
+    // ---------------------- 🟢 กรณี APPROVE ----------------------
+    if (dto.action === ActionType.APPROVE) {
+      if (voteRule === 'ANY_APPROVE') {
+        // ใครคนใดคนหนึ่ง Approved ก็ถือว่าผ่าน
+        await this.cancelOtherPendingActions(requestId, stepNameForHistory);
+        await this.processAdvanceNode(request, companyId);
       }
       else if (voteRule === 'ALL_MUST_APPROVE') {
-        const remainingPending = await this.prisma.wfAction.count({ where: { requestId: request.id, action: 'PENDING', isAdhoc: false } as any });
-        if (remainingPending > 0) return { message: 'บันทึกการอนุมัติแล้ว ระบบกำลังรอผู้อนุมัติท่านอื่น' };
+        // ทุกคนต้อง Approved
+        if (pendingCount > 0) {
+          return { message: 'บันทึกการอนุมัติแล้ว ระบบกำลังรอผู้อนุมัติท่านอื่น' };
+        } else {
+          await this.processAdvanceNode(request, companyId);
+        }
       } 
-      else {
-        await this.prisma.wfAction.updateMany({ where: { requestId: request.id, action: 'PENDING' }, data: { action: 'CANCELLED', comment: 'ถูกยกเลิกเนื่องจากมีผู้อนุมัติท่านอื่นอนุมัติแล้ว' } });
-      }
-
-      const nextNodeId = request.currentNode?.nextApproveId;
-      if (!nextNodeId) {
-        await this.wfRequestService.markAsApproved(request.id);
-      } else {
-        await this.prisma.wfRequest.update({ where: { id: request.id }, data: { currentNodeId: nextNodeId } });
-        const targetNode = await this.prisma.wfNode.findUnique({ where: { id: nextNodeId } });
-        const requestData = request.data ? (typeof request.data === 'string' ? JSON.parse(request.data) : request.data) : {};
-        const workflowData = await this.prisma.wfDefinition.findUnique({ where: { id: request.workflowId }, include: { nodes: true } });
-        await this.wfRequestService.processNextNodeRouting(request.id, targetNode, request.requesterId, companyId, requestData, workflowData?.nodes || []);
+      else if (voteRule === 'CUSTOM_PERCENTAGE') {
+        // ต้องได้เปอร์เซ็นต์ตามที่กำหนด
+        const currentPercent = totalVoters > 0 ? (approvedCount / totalVoters) * 100 : 0;
+        if (currentPercent >= threshold) {
+          await this.cancelOtherPendingActions(requestId, stepNameForHistory);
+          await this.processAdvanceNode(request, companyId);
+        } else {
+          return { message: `บันทึกเสียงโหวตแล้ว (ปัจจุบัน ${currentPercent.toFixed(2)}% ต้องการ ${threshold}%)` };
+        }
       }
     } 
+    // ---------------------- 🔴 กรณี REJECT ----------------------
     else if (dto.action === ActionType.REJECT) {
-      await this.prisma.wfAction.updateMany({ where: { requestId: request.id, action: 'PENDING' }, data: { action: 'CANCELLED', comment: 'ถูกยกเลิกเนื่องจากคำร้องถูกปฏิเสธแล้ว' } });
-      await this.wfRequestService.markAsRejected(request.id);
+      if (voteRule === 'ANY_APPROVE' || voteRule === 'ALL_MUST_APPROVE') {
+        // คนใดคนหนึ่ง Reject ก็ถือว่า Reject เลย
+        await this.cancelOtherPendingActions(requestId, stepNameForHistory);
+        await this.wfRequestService.markAsRejected(request.id);
+      }
+      else if (voteRule === 'CUSTOM_PERCENTAGE') {
+        // คำนวณความน่าจะเป็น: ถ้าคนที่เหลือ (Pending) อนุมัติทั้งหมด เปอร์เซ็นต์จะถึงเกณฑ์หรือไม่?
+        const maxPossibleApproved = approvedCount + pendingCount;
+        const maxPossiblePercent = totalVoters > 0 ? (maxPossibleApproved / totalVoters) * 100 : 0;
+
+        if (maxPossiblePercent < threshold) {
+          // เป็นไปไม่ได้แล้วที่จะถึงเกณฑ์ (Reject เลย)
+          await this.cancelOtherPendingActions(requestId, stepNameForHistory);
+          await this.wfRequestService.markAsRejected(request.id);
+        } else {
+          // ยังมีโอกาสถ้าคนที่เหลือ Approved (รอต่อไป)
+          return { message: `บันทึกการไม่อนุมัติแล้ว ระบบยังคงรอการตัดสินใจจากผู้อนุมัติท่านอื่น` };
+        }
+      }
     }
-    // ==================================================================
-    // 🔙 7. ระบบตีกลับให้แก้ไข (SEND_BACK) ** [อัปเดตใหม่ ป้องกัน Auto-Approve] **
-    // ==================================================================
+    // ---------------------- 🔙 กรณี SEND_BACK ----------------------
     else if (dto.action === ActionType.SEND_BACK) {
-      // 1. ยกเลิก PENDING ทั้งหมดที่ค้างอยู่ในโหนดปัจจุบัน
-      await this.prisma.wfAction.updateMany({
-        where: { requestId: request.id, action: 'PENDING' },
-        data: { action: 'CANCELLED', comment: 'ถูกยกเลิกเนื่องจากคำร้องถูกตีกลับให้แก้ไข' } 
-      });
+      await this.cancelOtherPendingActions(requestId, stepNameForHistory, 'ถูกยกเลิกเนื่องจากคำร้องถูกตีกลับให้แก้ไข');
 
       const allNodes = await this.prisma.wfNode.findMany({ where: { workflowId: request.workflowId } });
-      
-      // 2. หาโหนดก่อนหน้า (ใช้ Optional Chaining ป้องกัน Error)
       let previousNodeId = request.currentNode?.nextRejectId;
       
       if (!previousNodeId) {
@@ -240,7 +256,6 @@ export class WfActionService {
          }
       }
 
-      // 3. ตีกลับจนสุดทาง (REJECTED)
       if (!previousNodeId) {
          await this.prisma.wfRequest.update({
            where: { id: request.id },
@@ -254,9 +269,7 @@ export class WfActionService {
                comment: dto.comment || 'กรุณาตรวจสอบและแก้ไขข้อมูล'
             }
          });
-      } 
-      // 4. ถอยกลับไปโหนดก่อนหน้าแบบมีเงื่อนไข (ระงับ Auto-Approve)
-      else {
+      } else {
          const targetNode = allNodes.find(n => n.id === previousNodeId);
          if (!targetNode) throw new NotFoundException('ไม่พบขั้นตอนก่อนหน้าในระบบ');
 
@@ -265,17 +278,10 @@ export class WfActionService {
            data: { currentNodeId: previousNodeId, status: WorkflowStatus.IN_PROGRESS } 
          });
 
-         // แปลง data ก่อนส่งต่อ (ป้องกัน Error กรณีข้อมูลเป็น String)
          const requestData = typeof request.data === 'string' ? JSON.parse(request.data || '{}') : (request.data || {});
 
          await this.wfRequestService.assignApprovers(
-            request.id, 
-            targetNode, 
-            request.requesterId, 
-            companyId, 
-            requestData, 
-            allNodes, 
-            true // 🛑 Flag `isSendBack = true` นี้สำคัญที่สุด
+            request.id, targetNode, request.requesterId, companyId, requestData, allNodes, true
          );
       }
     }
@@ -283,29 +289,37 @@ export class WfActionService {
     return { message: 'ประมวลผลการกระทำสำเร็จ' };
   }
 
-  // 🌟 เพิ่มฟังก์ชันนี้ลงใน WfActionService
-  private async cancelOtherPendingActions(requestId: number, currentActionId: number, stepName: string) {
+  // =========================================================
+  // 🛡️ Helper Methods
+  // =========================================================
+  
+  // 🌟 ฟังก์ชันยกเลิกรายการ Pending ของคนอื่นในโหนดเดียวกัน
+  private async cancelOtherPendingActions(requestId: number, stepName: string, customComment?: string) {
     await this.prisma.wfAction.updateMany({
-      where: {
-        requestId: requestId,
-        stepName: stepName,
-        action: 'PENDING',
-        id: { not: currentActionId } // ลบของคนอื่นที่ยังไม่กด แต่เว้นของคนที่กดอนุมัติไว้
-      },
-      data: {
-        action: 'CANCELLED',
-        comment: 'ถูกยกเลิกเนื่องจากมีผู้อนุมัติท่านอื่นดำเนินการไปแล้ว'
-      }
+      where: { requestId: requestId, stepName: stepName, action: 'PENDING' },
+      data: { action: 'CANCELLED', comment: customComment || 'ถูกยกเลิกเนื่องจากผลการตัดสินใจในขั้นตอนนี้สิ้นสุดแล้ว' }
     });
   }
 
-// =========================================================
-  // 🛡️ Helper: ตรวจสอบสิทธิ์ว่ามี Inbox ค้างอยู่ไหม (รองรับ Delegation)
-  // =========================================================
+  // 🌟 ฟังก์ชันขับเคลื่อน Workflow ไปยังโหนดถัดไป
+  private async processAdvanceNode(request: any, companyId: number) {
+    const nextNodeId = request.currentNode?.nextApproveId;
+    
+    if (!nextNodeId) {
+      await this.wfRequestService.markAsApproved(request.id);
+    } else {
+      await this.prisma.wfRequest.update({ where: { id: request.id }, data: { currentNodeId: nextNodeId } });
+      const targetNode = await this.prisma.wfNode.findUnique({ where: { id: nextNodeId } });
+      const workflowData = await this.prisma.wfDefinition.findUnique({ where: { id: request.workflowId }, include: { nodes: true } });
+      const requestData = typeof request.data === 'string' ? JSON.parse(request.data || '{}') : (request.data || {});
+      
+      await this.wfRequestService.processNextNodeRouting(request.id, targetNode, request.requesterId, companyId, requestData, workflowData?.nodes || []);
+    }
+  }
+
   private async validateApprover(userId: number, requestId: number, isSystemBot: boolean = false) {
     if (isSystemBot) return { pendingTask: null, actingOnBehalfOf: null };
 
-    // 1. หาว่ามีงานค้างที่เป็นชื่อเราตรงๆ หรือไม่
     let pendingTask = await this.prisma.wfAction.findFirst({
       where: { requestId: requestId, actorId: userId, action: 'PENDING' }
     });
@@ -316,17 +330,12 @@ export class WfActionService {
     if (!pendingTask) {
       const now = new Date();
       const activeDelegations = await this.prisma.secUserDelegation.findMany({
-        where: {
-          delegateUserId: userId,
-          startDate: { lte: now },
-          endDate: { gte: now }
-        },
+        where: { delegateUserId: userId, startDate: { lte: now }, endDate: { gte: now } },
         include: { owner: { select: { fullName: true, username: true } } }
       });
 
       if (activeDelegations.length > 0) {
         const delegatorIds = activeDelegations.map(d => d.ownerUserId);
-        
         pendingTask = await this.prisma.wfAction.findFirst({
           where: { requestId: requestId, actorId: { in: delegatorIds }, action: 'PENDING' }
         });
@@ -340,8 +349,7 @@ export class WfActionService {
     }
 
     const userRoles = await this.prisma.secUserRole.findMany({
-      where: { userId: userId },
-      select: { roleId: true }
+      where: { userId: userId }, select: { roleId: true }
     });
     const isSuperAdmin = userRoles.some(r => r.roleId === 1);
 
@@ -352,13 +360,10 @@ export class WfActionService {
     return { pendingTask, actingOnBehalfOf, delegatorName };
   }
 
- // =========================================================
-  // Helper: บันทึกประวัติ Action
-  // =========================================================
   private async saveActionHistory(dto: CreateWfActionDto, userId: number, stepName?: string) {
     return this.prisma.wfAction.create({
       data: {
-        requestId: dto.requestId,
+        requestId: dto.requestId as number,
         actorId: userId,
         action: dto.action,
         comment: dto.comment,
@@ -367,9 +372,6 @@ export class WfActionService {
     });
   }
 
-  // =========================================================
-  // ดูประวัติ
-  // =========================================================
   async getHistory(companyId: number, requestId: number) {
     const request = await this.prisma.wfRequest.findFirst({
        where: { id: requestId, companyId }
