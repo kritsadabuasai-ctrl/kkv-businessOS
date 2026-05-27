@@ -715,11 +715,48 @@ async findAll(companyId: number, status?: string) {
     });
   }
 
-  async findOne(id: number, companyId: number) {
+  async findOne(id: number, companyId: number, userId: number, roleId: number) {
     const request = await this.prisma.wfRequest.findFirst({
-      where: { id, companyId }, include: { workflow: true, currentNode: true }
+      where: { id, companyId },
+      include: { 
+        requester: { select: { fullName: true, username: true } }, 
+        currentNode: true 
+      }
     });
-    if (!request) throw new NotFoundException('ไม่พบรายการคำร้องขอ');
-    return request;
+
+    if (!request) throw new NotFoundException('ไม่พบคำร้องที่ระบุ');
+
+    // 🌟 [NEW LOGIC] คำนวณสิทธิ์การแสดงปุ่ม Recall ให้หน้าบ้าน
+    let canRecall = false;
+
+    // กฎข้อที่ 1: เรื่องต้องยังอยู่ระหว่างดำเนินการเท่านั้น (ถ้า Approved หรือ Rejected จบไปแล้วจะดึงกลับไม่ได้)
+    if (request.status === WorkflowStatus.IN_PROGRESS) {
+      
+      // กฎข้อที่ 2: ถ้าเป็น Super Admin ให้สิทธิ์ดึงกลับเพื่อเข้าไปแก้ไขสถานการณ์ได้ตลอดเวลา
+      if (roleId === 1 || userId === 1) {
+        canRecall = true;
+      } else {
+        // กฎข้อที่ 3: ค้นหาบุคคลล่าสุดที่กด APPROVE จริงๆ (สกัดเอา System Auto-Action ออกไป)
+        const lastApproveAction = await this.prisma.wfAction.findFirst({
+          where: { 
+            requestId: id, 
+            action: 'APPROVE', 
+            comment: { not: { contains: 'System Auto' } } 
+          },
+          orderBy: { id: 'desc' }
+        });
+
+        // เฉพาะคนล่าสุดที่กดและทำให้ Step เปลี่ยนเท่านั้น ถึงจะมีสิทธิ์เห็นปุ่มนี้
+        if (lastApproveAction && lastApproveAction.actorId === userId) {
+          canRecall = true;
+        }
+      }
+    }
+
+    // ส่งข้อมูล Request พร้อมแปะ Flag สิทธิ์แกะกล่องให้หน้าบ้านเอาไปใช้วาดปุ่ม
+    return {
+      ...request,
+      canRecall // 🚀 หน้าบ้านใช้ตัวนี้ตรวจสอบได้เลย เช่น *ngIf="request.canRecall" หรือ request.canRecall && <Button />
+    };
   }
 }

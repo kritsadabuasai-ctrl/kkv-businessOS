@@ -53,7 +53,11 @@ export class WfRequestController {
     @Param('id', ParseIntPipe) id: number 
   ) {
     const companyId = req.user.companyId; 
-    return this.service.findOne(id, companyId);
+    const userId = Number(req.user.userId || req.user.id);
+    const roleId = Number(req.user.roleId || 0);
+
+    // 🌟 ส่ง userId และ roleId เพิ่มเข้าไปให้ Service คำนวณสิทธิ์
+    return this.service.findOne(id, companyId, userId, roleId);
   }
 
   // 🌟 จุดที่แก้ไขบั๊ก: ต้องเรียก actionService ไม่ใช่ service
