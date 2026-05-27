@@ -308,11 +308,12 @@ export class DocFileService {
       if (targetWorkflowId) {
         console.log(`[Auto-Workflow] พบการตั้งค่า Workflow ID ${targetWorkflowId} สำหรับไฟล์ ${newDoc.id} กำลังส่งเรื่องอัตโนมัติ...`);
 
-        const request = await this.wfRequestService.create(companyId, uploadedById, {
+        // 🌟 Fix: ระบุ Type เป็น any ป้องกัน TS2339 Error
+        const request: any = await this.wfRequestService.create(companyId, uploadedById, {
           moduleCode: 'DOC_UPLOAD',
           workflowId: targetWorkflowId,
           businessId: String(newDoc.id),
-          topic: `ขออนุมัติเอกสาร: ${newDoc.fileName}`, // 👈 topic จะใช้ชื่อไฟล์ที่มี (1) ติดไปด้วยอัตโนมัติ
+          topic: `ขออนุมัติเอกสาร: ${newDoc.fileName}`, 
         } as any);
 
         // อัปเดต wfRequestId กลับไปที่ DocFile ให้รู้ว่าไฟล์นี้ติดสถานะรออนุมัติ
@@ -915,11 +916,12 @@ async verifyFileIntegrity(companyId: number, fileId: number) {
     });
 
     // 5. โยนเข้า Workflow Engine
-    const request = await this.wfRequestService.create(companyId, userId, {
+    // 🌟 Fix: ระบุ Type เป็น any ป้องกัน TS2339 Error
+    const request: any = await this.wfRequestService.create(companyId, userId, {
       moduleCode: 'DATA_ACCESS',
       workflowId: mapping.workflowId,
       businessId: String(accessReq.id),
-      topic: `${topicPrefix}: ${file.fileName}`, // 🌟 ส่ง Topic ที่แยกประเภทแล้วเข้าสายอนุมัติ
+      topic: `${topicPrefix}: ${file.fileName}`, 
     } as any);
 
     // 6. อัปเดต ID กลับเข้าคำขอ
@@ -1217,7 +1219,8 @@ async verifyFileIntegrity(companyId: number, fileId: number) {
     if (targetWorkflowId) {
       console.log(`[Move File] โฟลเดอร์ปลายทางมี Workflow ID ${targetWorkflowId} กำลังส่งเรื่องอัตโนมัติ...`);
 
-      const request = await this.wfRequestService.create(companyId, userId, {
+      // 🌟 Fix: ระบุ Type เป็น any ป้องกัน TS2339 Error
+      const request: any = await this.wfRequestService.create(companyId, userId, {
         moduleCode: 'DOC_UPLOAD',
         workflowId: targetWorkflowId,
         businessId: String(fileId),
@@ -1345,7 +1348,8 @@ async verifyFileIntegrity(companyId: number, fileId: number) {
     }
 
     // 🌟 3. โยนให้ WfRequestService จัดการ
-    const request = await this.wfRequestService.create(companyId, userId, {
+    // 🌟 Fix: ระบุ Type เป็น any ป้องกัน TS2339 Error
+    const request: any = await this.wfRequestService.create(companyId, userId, {
       moduleCode: 'DOC_UPLOAD', 
       workflowId: targetWorkflowId, 
       businessId: String(fileId),
@@ -1426,7 +1430,7 @@ async verifyFileIntegrity(companyId: number, fileId: number) {
       const response = await result.response;
       const text = response.text().trim();
 
-      // สกัดเอาเฉพาะตัวเลขออกมาจากคำตอบ (ป้องกัน AI พิมพ์ข้อความแถมมา)
+      // สกัดเอาเฉพาะตัวเลขออกมาจากคำตอบ (ป้องกัน AIพิมพ์ข้อความแถมมา)
       const aiChosenId = parseInt(text.replace(/[^0-9]/g, ''), 10);
 
       // ยืนยันว่าโฟลเดอร์ที่ AI เลือกมีอยู่จริง
@@ -1656,7 +1660,8 @@ async verifyFileIntegrity(companyId: number, fileId: number) {
 
     // ส่งเข้าสายอนุมัติลบเอกสาร (ถ้าพบ Workflow และเป็นการลบโดยผู้ใช้)
     if (targetDeleteWorkflowId && userId !== 0) {
-      const request = await this.wfRequestService.create(companyId, userId, {
+      // 🌟 Fix: ระบุ Type เป็น any ป้องกัน TS2339 Error
+      const request: any = await this.wfRequestService.create(companyId, userId, {
         moduleCode: 'DOC_DELETE',
         workflowId: targetDeleteWorkflowId,
         businessId: String(fileId),
