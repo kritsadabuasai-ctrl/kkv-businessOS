@@ -25,27 +25,5 @@ export class WorkflowController {
     return this.service.getAvailableWorkflows(companyId, docType);
   }
 
- // ==========================================================
-  // ⚡ 2. API สำหรับการกดอนุมัติ (Action)
-  // ==========================================================
-  @Patch('requests/:id/action')
-  @RequirePermissions('workflow_request:create') // หรือ 'workflow:update' ตามสมควร
-  async takeAction(
-    @Request() req,
-    @Param('id', ParseIntPipe) requestId: number,
-    @Body() body: { action: 'APPROVE' | 'REJECT'; comment?: string }
-  ) {
-    // 🛡️ Security: ดึง userId และ companyId จาก Token
-    const userId = req.user.id || req.user.userId;
-    const companyId = req.user.companyId;
-
-    // ✅ เปลี่ยนจาก .takeAction เป็น .processAction ให้ตรงกับ Service
-    return this.service.processAction(
-      companyId,
-      userId,
-      requestId,
-      body.action,
-      body.comment
-    );
-  }
+ 
 }
