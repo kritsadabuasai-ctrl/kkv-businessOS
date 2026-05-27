@@ -26,16 +26,72 @@ export class WfRequestService {
   ) {}
 
 // =========================================================
-  // 1. สร้างคำร้อง (Start Workflow) + ระบบ Fast-Forward (Top-Down Bypass)
+  // 1. สร้างคำร้อง (Start Workflow) + ระบบย้าย/ลบไฟล์อัจฉริยะ + Fast-Forward Bypass
   // =========================================================
   async create(companyId: number, userId: number, dto: any) {
     const cId = Number(companyId);
     const uId = Number(userId);
     let workflow: any = null;
+    let targetWfId = dto.workflowId ? Number(dto.workflowId) : null;
 
-    if (dto.workflowId) {
+    // =========================================================
+    // 🌟 [ปรับปรุงใหม่] Logic ค้นหาสายอนุมัติแบบ Hierarchical (ลบ, อัปโหลด, ย้ายไฟล์)
+    // =========================================================
+    if (['DOC_DELETE', 'DOC_UPLOAD', 'DOC_MOVE'].includes(dto.moduleCode)) {
+      const file = await this.prisma.docFile.findUnique({
+        where: { id: Number(dto.businessId) },
+        include: { folder: true } 
+      });
+      
+      if (!file) throw new NotFoundException('ไม่พบไฟล์ที่ระบุในระบบ');
+
+      // 🛡️ ขั้นที่ 1: ดึง Workflow จากโฟลเดอร์แม่/โฟลเดอร์ปลายทาง
+      if (dto.moduleCode === 'DOC_DELETE') {
+        if (file.folder && file.folder.deleteWorkflowId) targetWfId = file.folder.deleteWorkflowId; 
+      } else {
+        // กรณีอัปโหลดหรือย้ายไฟล์ ให้ใช้ defaultWorkflowId ของโฟลเดอร์ปลายทาง
+        if (file.folder && file.folder.defaultWorkflowId) targetWfId = file.folder.defaultWorkflowId;
+      }
+
+      // 🛡️ ขั้นที่ 2: ดูที่ Module Mapping (ส่วนกลาง)
+      if (!targetWfId) {
+        const mapping = await this.prisma.wfModuleMapping.findFirst({
+          where: { companyId: cId, moduleCode: dto.moduleCode, isActive: true }
+        });
+        targetWfId = mapping?.workflowId ?? null; 
+      }
+
+      // 🛡️ ขั้นที่ 3: ตรวจสอบกฎ Workspace และกรณีไม่มี Workflow เลย
+      if (!targetWfId) {
+        const isWorkspace = file.folder?.isWorkspace || false;
+
+        if (dto.moduleCode === 'DOC_DELETE') {
+          if (isWorkspace) throw new BadRequestException('ไม่สามารถลบไฟล์ใน Workspace ได้เนื่องจากยังไม่มีการตั้งค่าสายอนุมัติ (Workflow)');
+          console.log(`[Workflow] ลบไฟล์ ID ${file.id} ทันทีเนื่องจากไม่ใช่ Workspace และไม่มี Workflow ควบคุม`);
+          await this.docFileService.deleteFile(file.id, cId, uId);
+          return { message: 'ลบไฟล์สำเร็จเรียบร้อยแล้ว' };
+        } 
+        else {
+          // 🌟 กรณี DOC_UPLOAD หรือ DOC_MOVE แต่โฟลเดอร์ปลายทางไม่มี Workflow ควบคุม
+          console.log(`[Workflow] อนุญาตให้ย้าย/อัปโหลดไฟล์ ID ${file.id} ทันที เนื่องจากไม่มี Workflow ควบคุมโฟลเดอร์นี้`);
+          
+          // ปลดล็อกไฟล์ให้ใช้งานได้เลย (Auto-Approve แบบไม่มี Workflow)
+          await this.prisma.docFile.update({
+             where: { id: file.id },
+             data: { wfRequestId: null }
+          });
+          
+          return { message: 'ดำเนินการสำเร็จเรียบร้อยแล้ว (ไม่มีเงื่อนไขสายอนุมัติบังคับ)' };
+        }
+      }
+    }
+
+    // =========================================================
+    // ดึงข้อมูล Workflow (ใช้ targetWfId ที่ถูกคำนวณมา)
+    // =========================================================
+    if (targetWfId) {
       workflow = await this.prisma.wfDefinition.findFirst({
-        where: { id: Number(dto.workflowId), companyId: cId },
+        where: { id: targetWfId, companyId: cId },
         include: { nodes: { orderBy: { stepOrder: 'asc' } } }
       });
     } else {
@@ -65,12 +121,12 @@ export class WfRequestService {
       }
     });
 
+    // =========================================================
     // 🌟🌟 ระบบ Fast-Forward แบบ Look-Ahead (Top-Down Bypass)
-    // เช็กว่าเป็น Super Admin ระดับระบบหรือไม่
+    // =========================================================
     const userRoles = await this.prisma.secUserRole.findMany({ where: { userId: uId }, select: { roleId: true } });
     const isSuperAdmin = userRoles.some(r => r.roleId === 1);
 
-    // --- 1. ค้นหาโหนดที่ลึกที่สุดที่ผู้ขอมีสิทธิ์อนุมัติ ---
     let tempNode = firstNode;
     let furthestNodeId: number | null = null;
     let tempVisited = new Set();
@@ -92,7 +148,6 @@ export class WfRequestService {
       }
     }
 
-    // --- 2. ทะลวงสายอนุมัติ (Bypass) ไปจนถึงโหนดอำนาจสูงสุด ---
     let currentNodeInPath = firstNode;
     let highestApprovalNode: any = null;
     let visitedNodes = new Set();
@@ -115,32 +170,23 @@ export class WfRequestService {
         const approvers = await this.getApproversForNode(currentNodeInPath, uId, cId);
         const isRequesterApprover = approvers.includes(uId) || isSuperAdmin;
 
-        // ถ้าผู้ขอมีอำนาจในโหนดนี้ หรือมีอำนาจในโหนดที่ลึกกว่า (Top-Down Bypass)
         if (isRequesterApprover || furthestNodeId !== null) {
            if (currentNodeInPath.id === furthestNodeId) {
-              // ถึงจุดสูงสุดของอำนาจแล้ว
-              // ถ้าโหนดนี้บังคับ ALL_MUST_APPROVE และไม่ได้เป็น Super Admin จะทะลวงไม่ได้ ต้องรอคนอื่น
-              if (currentNodeInPath.voteRule === 'ALL_MUST_APPROVE' && approvers.length > 1 && !isSuperAdmin) {
-                  break; 
-              }
+              if (currentNodeInPath.voteRule === 'ALL_MUST_APPROVE' && approvers.length > 1 && !isSuperAdmin) break; 
               
-              // อนุมัติโหนดสุดท้ายในอำนาจตัวเองให้จบ (ข้าม requireSignature ไปเลยตามเงื่อนไขของ User)
               highestApprovalNode = currentNodeInPath;
               currentNodeInPath = workflow.nodes.find((n: any) => n.id === currentNodeInPath.nextApproveId);
               break; 
            } else {
-              // โหนดนี้ต่ำกว่าระดับอำนาจที่มี ทะลวงข้ามได้เลย
               highestApprovalNode = currentNodeInPath;
               currentNodeInPath = workflow.nodes.find((n: any) => n.id === currentNodeInPath.nextApproveId);
            }
         } else {
-           // ไม่มีสิทธิ์ใดๆ ให้เบรกรอการทำงานตามปกติ
            break; 
         }
       }
     }
 
-    // --- 3. บันทึกประวัติ Action สำหรับโหนดที่ถูกทะลวงผ่าน ---
     if (highestApprovalNode) {
       console.log(`[Workflow] ⚡ Fast-Forward Enabled for User: ${uId} up to Node: ${highestApprovalNode.id}`);
       for (const node of pathNodes) {
@@ -184,7 +230,6 @@ export class WfRequestService {
          await this.markAsApproved(request.id);
       }
     } else {
-      // ถ้าระบบไม่ได้ Fast-Forward (เช่น Manager1 ติดโหนด ALL_MUST_APPROVE) ให้รัน Route มาตรฐาน
       await this.processNextNodeRouting(request.id, firstNode, uId, cId, request.data, workflow.nodes);
     }
 
@@ -192,15 +237,12 @@ export class WfRequestService {
   }
 
   // =========================================================
-  // 🌟 4. ระบบ Routing อัจฉริยะ (ทะลวงผ่าน CONDITION และ FYI อัตโนมัติ)
+  // 4. ระบบ Routing อัจฉริยะ (ทะลวงผ่าน CONDITION และ FYI อัตโนมัติ)
   // =========================================================
   async processNextNodeRouting(requestId: number, targetNode: any, requesterUserId: number, companyId: number, requestData: any, allNodes: any[]) {
     let currentNode = targetNode;
     
-    // 🚀 วนลูปเดินหน้าเรื่อยๆ ตราบใดที่ยังเจอโหนดทางแยก(CONDITION) หรือโหนดแจ้งทราบ(FYI)
     while (currentNode && (currentNode.nodeType === 'CONDITION' || currentNode.nodeType === 'FYI')) {
-      
-      // อัปเดตเข็มทิศชั่วคราวว่าวิ่งมาถึงนี่แล้ว
       await this.prisma.wfRequest.update({ where: { id: requestId }, data: { currentNodeId: currentNode.id } });
 
       if (currentNode.nodeType === 'CONDITION') {
@@ -209,31 +251,27 @@ export class WfRequestService {
         currentNode = nextNodeId ? allNodes.find((n: any) => n.id === nextNodeId) : null;
       }
       else if (currentNode.nodeType === 'FYI') {
-        // ดึงรายชื่อผู้ที่ต้องรับทราบ
         const rawApproverIds = await this.getApproversForNode(currentNode, requesterUserId, companyId);
         const uniqueUserIds = [...new Set(rawApproverIds.map(id => Number(id)))];
 
         if (uniqueUserIds.length > 0) {
-          // 📝 สร้างประวัติ "แจ้งให้ทราบแล้ว" ทิ้งไว้ให้ ไม่ต้องสร้างกล่อง PENDING
           await this.prisma.wfAction.createMany({
             data: uniqueUserIds.map(uid => ({
               requestId,
               actorId: uid,
               stepName: currentNode.nodeName || `แจ้งทราบ`,
-              action: 'APPROVE', // ถือว่า Action สมบูรณ์แบบ
+              action: 'APPROVE', 
               comment: 'System Auto-Skip: ระบบได้ส่งเรื่องแจ้งให้ทราบ (FYI) เรียบร้อยแล้ว'
             }))
           });
         }
         console.log(`[Workflow] ⏭️ Auto-Skip FYI Node for Request: ${requestId}`);
         
-        // วิ่งไปโหนดเป้าหมายถัดไป (FYI มีทางออกทางเดียวคือ Approve)
         const nextNodeId = currentNode.nextApproveId;
         currentNode = nextNodeId ? allNodes.find((n: any) => n.id === nextNodeId) : null;
       }
     }
 
-    // เมื่อหลุดลูปมา (แปลว่าเจอโหนด APPROVAL ของจริง หรือจบสายแล้ว)
     if (currentNode) {
       await this.prisma.wfRequest.update({ where: { id: requestId }, data: { currentNodeId: currentNode.id } });
       await this.assignApprovers(requestId, currentNode, requesterUserId, companyId, requestData, allNodes);
@@ -290,26 +328,21 @@ export class WfRequestService {
     companyId: number, 
     requestData: any, 
     allNodes: any[], 
-    isSendBack: boolean = false // 🌟 เพิ่ม Flag สำหรับป้องกัน Auto-Approve
+    isSendBack: boolean = false
   ) {
     const reqUserId = Number(requesterUserId);
     const cId = Number(companyId);
     
-    // ดึงรายชื่อคนที่มีสิทธิ์ใน Node นี้ (ประมวลผลคำนวณใหม่ทุกครั้ง)
     const rawApproverIds = await this.getApproversForNode(node, reqUserId, cId);
     const uniqueUserIds = [...new Set(rawApproverIds.map(id => Number(id)))];
 
-    // เช็กว่าคนขอเรื่อง เป็นหนึ่งในคนที่ต้องอนุมัติหรือไม่
     const isRequesterInvolved = uniqueUserIds.includes(reqUserId);
-    
-    // 🛑 🛑 กฎเหล็ก: ถ้าเป็นการตีกลับ (SEND_BACK) ห้าม Auto-Approve เด็ดขาด!! บังคับให้ทุกคนต้องกดเอง
     const shouldAutoApprove = !isSendBack && isRequesterInvolved && !node.requireSignature;
 
     const pendingUserIds = shouldAutoApprove 
       ? uniqueUserIds.filter(id => id !== reqUserId) 
       : uniqueUserIds;
 
-    // สร้าง PENDING ให้ทุกคนที่มีสิทธิ์ (ถ้าตีกลับ Manager ทุกคนใน Step 1 จะได้ PENDING)
     if (pendingUserIds.length > 0) {
       await this.prisma.wfAction.createMany({
         data: pendingUserIds.map(uid => ({
@@ -322,7 +355,6 @@ export class WfRequestService {
       });
     }
 
-    // ลอจิก Auto-Approve (จะทำงานเฉพาะตอนเดินเรื่องไปข้างหน้าปกติ)
     if (shouldAutoApprove) {
       console.log(`[Workflow] ⚡ Auto-Approve สำหรับผู้ขอเรื่อง: ${reqUserId}`);
       
@@ -372,6 +404,19 @@ export class WfRequestService {
 
     console.log(`[Workflow] คำร้อง ID ${requestId} (${request.businessType}) อนุมัติสมบูรณ์แล้ว`);
 
+    // 🌟 [ปรับปรุง] Hook สำหรับการอนุมัติ ย้ายไฟล์ และ อัปโหลดไฟล์
+    if (request.businessType === 'DOC_UPLOAD' || request.businessType === 'DOC_MOVE') {
+      try {
+        console.log(`[Workflow Hook] อนุมัติการนำเข้า/ย้ายไฟล์ ID ${request.businessId} สำเร็จ`);
+        await this.prisma.docFile.update({
+          where: { id: Number(request.businessId) },
+          data: { wfRequestId: null } // ปลดล็อกให้ไฟล์เข้าไปอยู่ใน Folder และพร้อมใช้งานจริง
+        });
+      } catch (error: any) {
+        console.error(`[Workflow Hook Error] ปลดล็อกไฟล์ไม่สำเร็จ: ${error.message}`);
+      }
+    }
+
     if (request.businessType === 'DOC_DELETE') {
       try {
         console.log(`[Workflow Hook] กำลังทำลายเอกสาร ID ${request.businessId}...`);
@@ -383,42 +428,22 @@ export class WfRequestService {
 
     if (request.businessType === 'DATA_ACCESS') {
       try {
-        const accessReq = await this.prisma.docAccessRequest.findUnique({
-          where: { wfRequestId: request.id }
-        });
-
+        const accessReq = await this.prisma.docAccessRequest.findUnique({ where: { wfRequestId: request.id } });
         if (accessReq) {
           const expireDate = new Date();
           expireDate.setDate(expireDate.getDate() + accessReq.durationDays);
 
           if (accessReq.targetType === 'FILE') {
             await this.prisma.docFileAccess.create({
-              data: {
-                companyId: accessReq.companyId,
-                fileId: accessReq.targetId,
-                userId: accessReq.requesterId,
-                canView: true,
-                canDownload: true,
-                expiresAt: expireDate
-              }
+              data: { companyId: accessReq.companyId, fileId: accessReq.targetId, userId: accessReq.requesterId, canView: true, canDownload: true, expiresAt: expireDate }
             });
           } else if (accessReq.targetType === 'FOLDER') {
             await this.prisma.docFolderAccess.create({
-              data: {
-                companyId: accessReq.companyId,
-                folderId: accessReq.targetId,
-                userId: accessReq.requesterId,
-                canView: true,
-                expiresAt: expireDate
-              }
+              data: { companyId: accessReq.companyId, folderId: accessReq.targetId, userId: accessReq.requesterId, canView: true, expiresAt: expireDate }
             });
           }
 
-          await this.prisma.docAccessRequest.update({
-            where: { id: accessReq.id },
-            data: { status: 'APPROVED' }
-          });
-          
+          await this.prisma.docAccessRequest.update({ where: { id: accessReq.id }, data: { status: 'APPROVED' } });
           console.log(`[Workflow Hook] ให้สิทธิ์เข้าถึง ${accessReq.targetType} ID ${accessReq.targetId} สำเร็จ`);
         }
       } catch (error: any) {
@@ -426,45 +451,25 @@ export class WfRequestService {
       }
     }
 
-    // 🌟 [เพิ่มใหม่] 1. Hook สำหรับการขออัตรากำลัง
     if (request.businessType === 'HR_MANPOWER') {
       try {
-        console.log(`[Workflow Hook] อนุมัติการขอคนสำเร็จ กำลังสร้างเก้าอี้สำหรับคำร้อง ID ${request.businessId}...`);
         await this.manpowerRequestService.approveAndGenerateSeats(request.companyId, Number(request.businessId));
-      } catch (error: any) {
-        console.error(`[Workflow Hook Error] สร้างอัตรากำลังไม่สำเร็จ: ${error.message}`);
-      }
+      } catch (error: any) { console.error(`[Workflow Hook Error] สร้างอัตรากำลังไม่สำเร็จ: ${error.message}`); }
     }
 
-    // 🌟 [เพิ่มใหม่] 2. Hook สำหรับการประกาศใช้โครงสร้างองค์กร
     if (request.businessType === 'HR_ORG_PUBLISH') {
       try {
-        console.log(`[Workflow Hook] อนุมัติผังองค์กรสำเร็จ กำลังซิงค์โครงสร้าง ID ${request.businessId} ลงตาราง Master...`);
         await this.orgStructureVersionService.executeSyncToMaster(request.companyId, Number(request.businessId));
-      } catch (error: any) {
-        console.error(`[Workflow Hook Error] ประกาศใช้ผังองค์กรไม่สำเร็จ: ${error.message}`);
-      }
+      } catch (error: any) { console.error(`[Workflow Hook Error] ประกาศใช้ผังองค์กรไม่สำเร็จ: ${error.message}`); }
     }
 
-    // 🌟 📦 [เพิ่มใหม่] 3. Hook สำหรับการอนุมัติคำขอคืน/เคลมสินค้า (RETURN_REQUEST)
     if (request.businessType === 'RETURN_REQUEST') {
       try {
-        console.log(`[Workflow Hook] Workflow อนุมัติใบเคลมสินค้า เลขที่ ${request.businessId} สำเร็จ`);
-        
-        // อัปเดตสถานะคำขอคืนสินค้าเป็น APPROVED (ผ่านการพิจารณา) เพื่อให้หน้าบ้านดำเนินกระบวนการส่งคืน/คืนเงิน ต่อได้เลย
         await this.prisma.comReturnRequest.update({
-          where: {
-            companyId_docNo: {
-              companyId: request.companyId,
-              docNo: request.businessId // ในระบบเคลม บันทึก businessId เป็น docNo (RMA-XXXX)
-            }
-          },
-          data: { status: 'APPROVED' } // หรือใช้ RmaStatus.APPROVED ตาม Prisma Client
+          where: { companyId_docNo: { companyId: request.companyId, docNo: request.businessId } },
+          data: { status: 'APPROVED' } 
         });
-        
-      } catch (error: any) {
-        console.error(`[Workflow Hook Error] ปรับสถานะอนุมัติใบเคลมสินค้าไม่สำเร็จ: ${error.message}`);
-      }
+      } catch (error: any) { console.error(`[Workflow Hook Error] ปรับสถานะใบเคลมไม่สำเร็จ: ${error.message}`); }
     }
 
     // =========================================================
@@ -488,57 +493,38 @@ export class WfRequestService {
       }
     }
 
-    // =========================================================
-    // 🌟 🛒 [เพิ่มใหม่] Hook สำหรับการอนุมัติใบสั่งซื้อสินค้า (PURCHASE_ORDER)
-    // =========================================================
+    if (request.businessType === 'CRM_REDEMPTION') {
+      try {
+        await this.prisma.crmRedemption.updateMany({
+          where: { companyId: request.companyId, redeemCode: request.businessId },
+          data: { status: 'COMPLETED' }
+        });
+      } catch (error: any) { console.error(`[Workflow Hook Error] ปรับสถานะใบแลกรางวัลไม่สำเร็จ: ${error.message}`); }
+    }
+
     if (request.businessType === 'PURCHASE_ORDER') {
       try {
-        console.log(`[Workflow Hook] Workflow อนุมัติใบสั่งซื้อสินค้า เลขที่ ${request.businessId} สำเร็จ`);
-        
-        // ปรับสถานะใบ PO เป็น APPROVED เพื่อปลดล็อกให้พนักงานคลังสามารถกด "รับสินค้าเข้าคลัง" ได้
         await this.prisma.proPurchaseOrder.update({
-          where: {
-            companyId_docNo: {
-              companyId: request.companyId,
-              docNo: request.businessId 
-            }
-          },
+          where: { companyId_docNo: { companyId: request.companyId, docNo: request.businessId } },
           data: { status: 'APPROVED' } 
         });
-        
-      } catch (error: any) {
-        console.error(`[Workflow Hook Error] ปรับสถานะอนุมัติใบสั่งซื้อไม่สำเร็จ: ${error.message}`);
-      }
+      } catch (error: any) { console.error(`[Workflow Hook Error] ปรับสถานะใบสั่งซื้อไม่สำเร็จ: ${error.message}`); }
     }
 
-    // =========================================================
-    // 🌟 🎓 [เพิ่มใหม่] Hook สำหรับการเปิดคลาสเรียน (Training Session)
-    // =========================================================
     if (request.businessType === 'HR_TRAINING_SESSION') {
       try {
-        console.log(`[Workflow Hook] อนุมัติการเปิดคลาสเรียน เปลี่ยนสถานะ Session ID ${request.businessId}...`);
         await this.prisma.hrTrainingSession.update({
-          where: { id: Number(request.businessId) },
-          data: { status: 'PUBLISHED' } // 💡 อนุมัติแล้วปรับสถานะเป็นประกาศเปิดรับสมัคร
+          where: { id: Number(request.businessId) }, data: { status: 'PUBLISHED' }
         });
-      } catch (error: any) {
-        console.error(`[Workflow Hook Error] อัปเดตสถานะคลาสเรียนไม่สำเร็จ: ${error.message}`);
-      }
+      } catch (error: any) { console.error(`[Workflow Hook Error] อัปเดตสถานะคลาสเรียนไม่สำเร็จ: ${error.message}`); }
     }
 
-    // =========================================================
-    // 🌟 🎓 [เพิ่มใหม่] Hook สำหรับการอนุมัติพนักงานเข้าอบรม
-    // =========================================================
     if (request.businessType === 'HR_TRAINING_ENROLL') {
       try {
-        console.log(`[Workflow Hook] อนุมัติการเข้าอบรม เปลี่ยนสถานะ Enrollment ID ${request.businessId}...`);
         await this.prisma.hrTrainingEnrollment.update({
-          where: { id: Number(request.businessId) },
-          data: { status: 'REGISTERED' } 
+          where: { id: Number(request.businessId) }, data: { status: 'REGISTERED' } 
         });
-      } catch (error: any) {
-        console.error(`[Workflow Hook Error] อัปเดตสถานะการอบรมไม่สำเร็จ: ${error.message}`);
-      }
+      } catch (error: any) { console.error(`[Workflow Hook Error] อัปเดตสถานะการอบรมไม่สำเร็จ: ${error.message}`); }
     }
 
 
@@ -555,237 +541,121 @@ export class WfRequestService {
 
     console.log(`[Workflow] คำร้อง ID ${requestId} (${request.businessType}) ถูกปฏิเสธ/ยกเลิก!`);
 
-    // =========================================================
-    // 🌟 📄 [เพิ่มใหม่] Hook สำหรับการปฏิเสธขอสิทธิ์เข้าถึงข้อมูล (DATA_ACCESS)
-    // =========================================================
-    if (request.businessType === 'DATA_ACCESS') {
+    // 🌟 [ปรับปรุง] Hook สำหรับการย้ายไฟล์ไม่สำเร็จ (DOC_MOVE)
+    if (request.businessType === 'DOC_MOVE') {
       try {
-        console.log(`[Workflow Hook] ไม่อนุมัติสิทธิ์เข้าถึงข้อมูล กำลังอัปเดตคำร้อง ID ${request.businessId}...`);
-        
-        // อัปเดตตารางคำขอ (docAccessRequest) ให้เป็น REJECTED เพื่อปิดงานไม่ให้ค้าง PENDING
-        await this.prisma.docAccessRequest.update({
-          where: { id: Number(request.businessId) }, // ใช้ businessId เพราะตอนสร้างเราฝาก ID ของตารางนี้มา
-          data: { status: 'REJECTED' }
-        });
-        
-      } catch (error: any) {
-        console.error(`[Workflow Hook Error] อัปเดตสถานะปฏิเสธสิทธิ์เข้าถึงไม่สำเร็จ: ${error.message}`);
-      }
-    }
-
-    // =========================================================
-    // 🌟 🗑️ [เพิ่มใหม่] Hook สำหรับการปฏิเสธการทำลายเอกสาร (DOC_DELETE)
-    // =========================================================
-    if (request.businessType === 'DOC_DELETE') {
-      try {
-        console.log(`[Workflow Hook] ไม่อนุมัติการทำลายเอกสาร กำลังปลดล็อกไฟล์ ID ${request.businessId}...`);
-        
-        // ปลดล็อก wfRequestId ออกจาก DocFile เพื่อให้เอกสารกลับคืนสู่สถานะปกติ
-        // และสามารถทำรายการอื่นๆ (เช่น ขอลบใหม่ในอนาคต) ได้
+        console.log(`[Workflow Hook] ไม่อนุมัติการย้ายไฟล์ ID ${request.businessId} ปลดล็อกสถานะ...`);
+        // ปลดล็อก wfRequestId เพื่อไม่ให้ไฟล์ค้าง PENDING 
+        // (ส่วนการย้ายกลับ Folder เดิม หน้าบ้านอาจจะต้องยิง API Update กลับมาครับ)
         await this.prisma.docFile.update({
           where: { id: Number(request.businessId) },
           data: { wfRequestId: null }
         });
-        
       } catch (error: any) {
-        console.error(`[Workflow Hook Error] ปลดล็อกเอกสารจากการขอลบไม่สำเร็จ: ${error.message}`);
+        console.error(`[Workflow Hook Error] ปลดล็อกเอกสารจากการย้ายไม่สำเร็จ: ${error.message}`);
       }
     }
 
-    // =========================================================
-    // 🌟 📄 [เพิ่มใหม่] Hook สำหรับเอกสารที่ถูกตีตก (DOC_UPLOAD) ให้เวลา 7 วันก่อนลบทิ้ง
-    // =========================================================
+    if (request.businessType === 'DATA_ACCESS') {
+      try {
+        await this.prisma.docAccessRequest.update({ where: { id: Number(request.businessId) }, data: { status: 'REJECTED' } });
+      } catch (error: any) { console.error(`[Workflow Hook Error] อัปเดตสถานะปฏิเสธสิทธิ์ไม่สำเร็จ: ${error.message}`); }
+    }
+
+    if (request.businessType === 'DOC_DELETE') {
+      try {
+        await this.prisma.docFile.update({ where: { id: Number(request.businessId) }, data: { wfRequestId: null } });
+      } catch (error: any) { console.error(`[Workflow Hook Error] ปลดล็อกเอกสารจากการขอลบไม่สำเร็จ: ${error.message}`); }
+    }
+
     if (request.businessType === 'DOC_UPLOAD' && request.businessId) {
       try {
-        console.log(`[Workflow Hook] ไม่อนุมัติเอกสาร ID ${request.businessId} กำลังตั้งเวลาลบทิ้งในอีก 7 วัน...`);
         const fileId = parseInt(request.businessId, 10);
         if (!isNaN(fileId)) {
           const deleteDate = new Date();
           deleteDate.setDate(deleteDate.getDate() + 7); 
-          await this.prisma.docFile.update({
-            where: { id: fileId },
-            data: { autoDeleteAt: deleteDate }
-          });
+          await this.prisma.docFile.update({ where: { id: fileId }, data: { autoDeleteAt: deleteDate } });
         }
-      } catch (error: any) {
-        console.error(`[Workflow Hook Error] ตั้งเวลาลบเอกสารไม่สำเร็จ: ${error.message}`);
-      }
+      } catch (error: any) { console.error(`[Workflow Hook Error] ตั้งเวลาลบเอกสารไม่สำเร็จ: ${error.message}`); }
     }
 
-    // 🌟 [เพิ่มใหม่] Hook สำหรับตีดราฟต์ผังองค์กรกลับ
+    
+
     if (request.businessType === 'HR_ORG_PUBLISH') {
       try {
-        console.log(`[Workflow Hook] ไม่อนุมัติผังองค์กร กำลังตีดราฟต์ ID ${request.businessId} กลับให้แก้ไข...`);
-        // เรียกใช้ฟังก์ชัน revertToDraft ที่เราสร้างไว้ใน orgStructureVersionService
         await this.orgStructureVersionService.revertToDraft(request.companyId, Number(request.businessId));
-      } catch (error: any) {
-        console.error(`[Workflow Hook Error] ตีดราฟต์กลับไม่สำเร็จ: ${error.message}`);
-      }
+      } catch (error: any) { console.error(`[Workflow Hook Error] ตีดราฟต์กลับไม่สำเร็จ: ${error.message}`); }
     }
 
-    // 🌟 [เพิ่มใหม่] Hook สำหรับการขออัตรากำลัง (ถ้าโดน Reject ก็ปลดล็อกให้แก้ส่งใหม่ได้)
     if (request.businessType === 'HR_MANPOWER') {
       try {
-        console.log(`[Workflow Hook] ไม่อนุมัติขออัตรากำลัง กำลังปลดล็อกคำร้อง ID ${request.businessId}...`);
-        await this.prisma.hrManpowerRequest.update({
-          where: { id: Number(request.businessId) },
-          data: { wfRequestId: null } // ปลดเลข Workflow ออก เพื่อให้หน้าบ้านกด Edit / Submit ใหม่ได้
-        });
-      } catch (error: any) {
-        console.error(`[Workflow Hook Error] ปลดล็อกใบขอคนไม่สำเร็จ: ${error.message}`);
-      }
+        await this.prisma.hrManpowerRequest.update({ where: { id: Number(request.businessId) }, data: { wfRequestId: null } });
+      } catch (error: any) { console.error(`[Workflow Hook Error] ปลดล็อกใบขอคนไม่สำเร็จ: ${error.message}`); }
     }
 
-    // 🌟 📦 [เพิ่มใหม่] 4. Hook สำหรับการปฏิเสธคำขอคืน/เคลมสินค้า (RETURN_REQUEST)
     if (request.businessType === 'RETURN_REQUEST') {
       try {
-        console.log(`[Workflow Hook] Workflow ไม่อนุมัติ/ปฏิเสธ ใบเคลมสินค้า เลขที่ ${request.businessId}`);
-        
-        // ปรับสถานะของเอกสารคำขอคืนสินค้าตัวนี้เป็น REJECTED เพื่อยกเลิกสิทธิ์ในการเคลมก้อนนี้ และคืนจำนวนสสิทธิ์สต็อกกลับไปให้ลูกค้ากดเคลมใหม่ได้ (ตามด่านตรวจงูกินหาง)
         await this.prisma.comReturnRequest.update({
-          where: {
-            companyId_docNo: {
-              companyId: request.companyId,
-              docNo: request.businessId
-            }
-          },
-          data: { status: 'REJECTED' } // หรือใช้ RmaStatus.REJECTED ตาม Prisma Client
+          where: { companyId_docNo: { companyId: request.companyId, docNo: request.businessId } },
+          data: { status: 'REJECTED' } 
         });
-
-      } catch (error: any) {
-        console.error(`[Workflow Hook Error] ปรับสถานะปฏิเสธใบเคลมสินค้าไม่สำเร็จ: ${error.message}`);
-      }
+      } catch (error: any) { console.error(`[Workflow Hook Error] ปรับสถานะปฏิเสธใบเคลมไม่สำเร็จ: ${error.message}`); }
     }
 
-    // =========================================================
-    // 🌟 🎁 [เพิ่มใหม่] Hook สำหรับการปฏิเสธใบแลกของรางวัล (CRM_REDEMPTION) -> คืนแต้ม + คืนสต็อก
-    // =========================================================
     if (request.businessType === 'CRM_REDEMPTION') {
       try {
-        console.log(`[Workflow Hook] Workflow ปฏิเสธใบแลกของรางวัล รหัส ${request.businessId} กำลังทำการคืนแต้มและคืนสต็อก...`);
-        
-        // 1. ดึงข้อมูลประวัติการแลกของรางวัลรายการนี้ขึ้นมาตรวจสอบก่อน
         const redemption = await this.prisma.crmRedemption.findFirst({
-          where: { redeemCode: request.businessId, companyId: request.companyId },
-          include: { reward: true }
+          where: { redeemCode: request.businessId, companyId: request.companyId }, include: { reward: true }
         });
-
-        // 🛡️ ป้องกันการคืนแต้มซ้ำซ้อน (ตรวจเช็คว่าต้องเป็นรายการที่ค้าง PENDING อยู่เท่านั้น)
         if (redemption && redemption.status === 'PENDING') {
           await this.prisma.$transaction(async (tx) => {
-            
-            // 2.1 ปรับสถานะใบแลกเป็น CANCELLED (ยกเลิกรายการ)
-            await tx.crmRedemption.update({
-              where: { id: redemption.id },
-              data: { status: 'CANCELLED' }
-            });
-
-            // 2.2 ค้นหาบัญชีสมาชิกร้านค้า (รายสาขา) ของลูกค้าเพื่อบวกแต้มคืน
+            await tx.crmRedemption.update({ where: { id: redemption.id }, data: { status: 'CANCELLED' } });
             if (redemption.shopId) {
               const shopMember = await tx.crmMemberShop.findUnique({
-                where: {
-                  memberId_shopId: {
-                    memberId: redemption.memberId,
-                    shopId: redemption.shopId
-                  }
-                }
+                where: { memberId_shopId: { memberId: redemption.memberId, shopId: redemption.shopId } }
               });
-
               if (shopMember) {
                 const newBalance = shopMember.pointBalance + redemption.pointUsed;
-
-                // 2.3 อัปเดตยอดแต้มสะสมเพิ่มกลับเข้าไปในตาราง CrmMemberShop แทน CrmMember
-                await tx.crmMemberShop.update({
-                  where: { id: shopMember.id },
-                  data: { pointBalance: newBalance }
-                });
-
-                // 2.4 บันทึก Point Log ขาบวกแต้มคืน (Refund) เพื่อให้ตรวจสอบประวัติย้อนหลังได้ชัดเจน
+                await tx.crmMemberShop.update({ where: { id: shopMember.id }, data: { pointBalance: newBalance } });
                 await tx.crmPointLog.create({
                   data: {
-                    companyId: redemption.companyId,
-                    memberId: redemption.memberId,
-                    amount: redemption.pointUsed, // ส่งค่าแต้มเป็นบวกเพื่อคืนเข้าบัญชี
-                    balanceAfter: newBalance,
-                    action: 'ADJUSTMENT', 
-                    note: `คืนคะแนนเนื่องจากคำขอแลกรางวัลถูกปฏิเสธ: ${redemption.redeemCode}`,
-                    refRedemptionId: redemption.id
+                    companyId: redemption.companyId, memberId: redemption.memberId, amount: redemption.pointUsed, 
+                    balanceAfter: newBalance, action: 'ADJUSTMENT', note: `คืนคะแนน: ${redemption.redeemCode}`, refRedemptionId: redemption.id
                   }
                 });
               }
             }
-
-            // 2.5 คืนโควต้าสต็อกของรางวัลชิ้นนั้น (หากของรางวัลมีการจำกัด Stock)
             if (redemption.reward && redemption.reward.stockQty !== null) {
-              await tx.crmReward.update({
-                where: { id: redemption.rewardId },
-                data: { stockQty: { increment: 1 } }
-              });
+              await tx.crmReward.update({ where: { id: redemption.rewardId }, data: { stockQty: { increment: 1 } } });
             }
           });
-          
-          console.log(`[Workflow Hook] ดำเนินการคืนคะแนน ${redemption.pointUsed} แต้ม และสต็อกของรางวัลคืนระบบเรียบร้อยครับ`);
         }
-      } catch (error: any) {
-        console.error(`[Workflow Hook Error] จัดการคืนแต้มและสต็อกใบแลกของรางวัลไม่สำเร็จ: ${error.message}`);
-      }
+      } catch (error: any) { console.error(`[Workflow Hook Error] คืนแต้มไม่สำเร็จ: ${error.message}`); }
     }
 
-    // =========================================================
-    // 🌟 🛒 [เพิ่มใหม่] Hook สำหรับการปฏิเสธใบสั่งซื้อสินค้า (PURCHASE_ORDER)
-    // =========================================================
     if (request.businessType === 'PURCHASE_ORDER') {
       try {
-        console.log(`[Workflow Hook] Workflow ปฏิเสธ/ไม่อนุมัติ ใบสั่งซื้อสินค้า เลขที่ ${request.businessId}`);
-        
-        // ปรับสถานะใบ PO เป็น REJECTED เพื่อล็อกไม่ให้มีการรับสินค้าเข้าคลังเด็ดขาด
         await this.prisma.proPurchaseOrder.update({
-          where: {
-            companyId_docNo: {
-              companyId: request.companyId,
-              docNo: request.businessId
-            }
-          },
+          where: { companyId_docNo: { companyId: request.companyId, docNo: request.businessId } },
           data: { status: 'REJECTED' } 
         });
-
-      } catch (error: any) {
-        console.error(`[Workflow Hook Error] ปรับสถานะปฏิเสธใบสั่งซื้อไม่สำเร็จ: ${error.message}`);
-      }
+      } catch (error: any) { console.error(`[Workflow Hook Error] ปรับสถานะปฏิเสธใบสั่งซื้อไม่สำเร็จ: ${error.message}`); }
     }
 
-    // =========================================================
-    // 🌟 🎓 [เพิ่มใหม่] Hook สำหรับปฏิเสธการเปิดคลาสเรียน
-    // =========================================================
     if (request.businessType === 'HR_TRAINING_SESSION') {
       try {
-        console.log(`[Workflow Hook] ไม่อนุมัติการเปิดคลาสเรียน เปลี่ยนสถานะ Session ID ${request.businessId}...`);
-        await this.prisma.hrTrainingSession.update({
-          where: { id: Number(request.businessId) },
-          data: { status: 'CANCELLED' } // ถ้าผู้บริหารไม่อนุมัติให้จัด ก็ปรับสถานะเป็นยกเลิก 
-        });
-      } catch (error: any) {
-        console.error(`[Workflow Hook Error] ยกเลิกคลาสเรียนไม่สำเร็จ: ${error.message}`);
-      }
+        await this.prisma.hrTrainingSession.update({ where: { id: Number(request.businessId) }, data: { status: 'CANCELLED' } });
+      } catch (error: any) { console.error(`[Workflow Hook Error] ยกเลิกคลาสเรียนไม่สำเร็จ: ${error.message}`); }
     }
 
-    // =========================================================
-    // 🌟 🎓 [เพิ่มใหม่] Hook สำหรับปฏิเสธการเข้าอบรมของพนักงาน
-    // =========================================================
     if (request.businessType === 'HR_TRAINING_ENROLL') {
       try {
-        console.log(`[Workflow Hook] ไม่อนุมัติการเข้าอบรม เปลี่ยนสถานะ Enrollment ID ${request.businessId}...`);
-        await this.prisma.hrTrainingEnrollment.update({
-          where: { id: Number(request.businessId) },
-          data: { status: 'REJECTED' } // หัวหน้าตีตกไม่ให้ไปอบรม
-        });
-      } catch (error: any) {
-        console.error(`[Workflow Hook Error] ปฏิเสธสถานะการอบรมไม่สำเร็จ: ${error.message}`);
-      }
+        await this.prisma.hrTrainingEnrollment.update({ where: { id: Number(request.businessId) }, data: { status: 'REJECTED' } });
+      } catch (error: any) { console.error(`[Workflow Hook Error] ปฏิเสธสถานะการอบรมไม่สำเร็จ: ${error.message}`); }
     }
   }
 
-  // =========================================================
+ // =========================================================
   // 7. Helper: ประเมินผลเงื่อนไข
   // =========================================================
   private evaluateCondition(conditionLogic: any, payload: any): boolean {
@@ -807,36 +677,22 @@ export class WfRequestService {
     }
   }
 
-  // =========================================================
+// =========================================================
   // 📥 ดึงรายการรออนุมัติของฉัน
   // =========================================================
   async getMyInbox(companyId: number, userId: number) {
     const now = new Date();
-
     const activeDelegations = await this.prisma.secUserDelegation.findMany({
-      where: {
-        delegateUserId: userId,
-        startDate: { lte: now },
-        endDate: { gte: now }
-      }
+      where: { delegateUserId: userId, startDate: { lte: now }, endDate: { gte: now } }
     });
 
     const delegatorIds = activeDelegations.map(d => d.ownerUserId);
     const allTargetUserIds = [userId, ...delegatorIds];
 
     const pendingActions = await this.prisma.wfAction.findMany({
-      where: {
-        action: 'PENDING',
-        actorId: { in: allTargetUserIds },
-        request: { companyId: companyId } 
-      },
+      where: { action: 'PENDING', actorId: { in: allTargetUserIds }, request: { companyId: companyId } },
       include: {
-        request: {
-          include: {
-            requester: { select: { fullName: true, username: true } },
-            currentNode: true
-          }
-        },
+        request: { include: { requester: { select: { fullName: true, username: true } }, currentNode: true } },
         actor: { select: { fullName: true, username: true } } 
       },
       orderBy: { createdAt: 'desc' }
@@ -845,32 +701,23 @@ export class WfRequestService {
     return pendingActions.map(action => {
       const isDelegated = action.actorId !== userId;
       return {
-        ...action.request,
-        actionId: action.id, 
-        isDelegated: isDelegated,
+        ...action.request, actionId: action.id, isDelegated: isDelegated,
         delegatorName: isDelegated ? (action.actor.fullName || action.actor.username) : null
       };
     });
   }
 
-  // =========================================================
-  // CRUD มาตรฐาน
-  // =========================================================
-  async findAll(companyId: number, status?: string) {
+async findAll(companyId: number, status?: string) {
     return this.prisma.wfRequest.findMany({
       where: { companyId, status: status as WorkflowStatus || undefined },
-      include: {
-        requester: { select: { fullName: true, username: true } },
-        currentNode: true, 
-      },
+      include: { requester: { select: { fullName: true, username: true } }, currentNode: true },
       orderBy: { createdAt: 'desc' }
     });
   }
 
   async findOne(id: number, companyId: number) {
     const request = await this.prisma.wfRequest.findFirst({
-      where: { id, companyId },
-      include: { workflow: true, currentNode: true }
+      where: { id, companyId }, include: { workflow: true, currentNode: true }
     });
     if (!request) throw new NotFoundException('ไม่พบรายการคำร้องขอ');
     return request;
