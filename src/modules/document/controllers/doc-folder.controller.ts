@@ -66,6 +66,9 @@ export class DocFolderController {
     return this.folderService.updateFolderAccess(req.user.companyId, id, rules); // 🌟 ส่งตัวแปรเข้าไปใน Service
   }
 
+  // ==========================================
+  // 🚚 [แก้ไขสำเร็จ] ปรับเพิ่ม Parameter ให้ครบตามสัญญาของ Service
+  // ==========================================
   @ApiOperation({ summary: 'ย้ายโฟลเดอร์ไปยังตำแหน่งใหม่' })
   @RequirePermissions('document:update') // เช็กสิทธิ์ว่ามีสิทธิ์แก้ไขเอกสารหรือไม่
   @Put(':id/move')
@@ -74,7 +77,12 @@ export class DocFolderController {
     @Body('newParentId') newParentId: number | null, // รับเป็น null ถ้าย้ายออกมาเป็นแฟ้มหลัก (Root)
     @Req() req: any
   ) {
-    return this.folderService.moveFolder(req.user.companyId, id, newParentId);
+    // 🌟 1. ดึง userId และ roleId จาก Token เหมือน Endpoint ตัวอื่น
+    const userId = req.user?.id || req.user?.userId;
+    const roleId = Number(req.user?.roleId || 0);
+
+    // 🌟 2. ส่ง Arguments ไปประมวลผลให้ครบทั้ง 5 ตัว
+    return this.folderService.moveFolder(req.user?.companyId, id, userId, roleId, newParentId);
   }
 
   @ApiOperation({ summary: 'ลบแฟ้มข้อมูล' })
