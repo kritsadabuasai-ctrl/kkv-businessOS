@@ -535,7 +535,7 @@ Table int_shopee_shops {
   externalConnection int_external_connections
   shopId String [unique, not null, note: '🏪 ข้อมูลร้านค้า']
   shopName String
-  accessToken String [not null, note: '🔑 โทเค็น (ลบ Partner ID/Key ออก เพราะไปอยู��ใน .env)']
+  accessToken String [not null, note: '🔑 โทเค็น (ลบ Partner ID/Key ออก เพราะไปอยู่ใน .env)']
   refreshToken String
   accessTokenExpiresAt DateTime
   refreshTokenExpiresAt DateTime
@@ -1212,6 +1212,7 @@ Table wf_definitions {
   name String [not null, note: 'ชื่อของกระบวนการ Workflow เช่น "อนุมัติใบสั่งซื้อ", "อนุมัติการลา"']
   defaultFolders doc_folders [not null]
   deleteFolders doc_folders [not null]
+  accessFolders doc_folders [not null]
   description String [note: 'รายละเอียดหรือคำอธิบายเพิ่มเติมเกี่ยวกับกระบวนการนี้']
   isActive Boolean [not null, default: true, note: 'สถานะการใช้งาน (Default: true) หากเป็น false จะไม่สามารถสร้างรายการคำขอใหม่จาก Workflow นี้ได้']
   nodes wf_nodes [not null, note: '🔗 ความสัมพันธ์กับตารางอื่นๆ']
@@ -1316,7 +1317,7 @@ Table wf_actions {
   stepName String [not null, note: 'ชื่อขั้นตอนในขณะที่กดดำเนินการ (คัดลอกมาจาก nodeName ของ WfNode ณ ขณะนั้น)']
   action String [not null, note: 'ประเภทการตัดสินใจ เช่น APPROVE, REJECT, SEND_BACK, หรือ CANCEL']
   isAdhoc Boolean [not null, default: false, note: 'ระบุว่าเป็นงานที่ถูกเชิญเข้ามาชั่วคราว (ไม่ได้อยู่ใน Flow ปกติ)']
-  invitedById Int [note: 'รหัสคนที่กดเชิญเข้ามา (เพื่อให้รู้ว่าใครเป็นคนลากคนนอกเข้า���า)']
+  invitedById Int [note: 'รหัสคนที่กดเชิญเข้ามา (เพื่อให้รู้ว่าใครเป็นคนลากคนนอกเข้ามา)']
   invitedBy sec_users
   comment String [note: 'หมายเหตุหรือเหตุผลประกอบการตัดสินใจจากผู้ดำเนินการ']
   createdAt DateTime [default: `now()`, not null, note: 'วันและเวลาที่เกิดกิจกรรมการตัดสินใจนี้ขึ้น (Default: ปัจจุบัน)']
@@ -3452,6 +3453,8 @@ Table doc_folders {
   defaultWorkflow wf_definitions
   deleteWorkflowId Int [note: '🌟 [เพิ่มใหม่] สายอนุมัติสำหรับ "ลบทำลาย" เอกสาร']
   deleteWorkflow wf_definitions
+  accessWorkflowId Int
+  accessWorkflow wf_definitions
   parentId Int [note: 'โครงสร้าง Parent-Child เพื่อทำ Sub-folder']
   parent doc_folders
   children doc_folders [not null]
@@ -5784,6 +5787,8 @@ Ref: doc_folders.companyId > org_companies.id [delete: Cascade]
 Ref: doc_folders.defaultWorkflowId > wf_definitions.id
 
 Ref: doc_folders.deleteWorkflowId > wf_definitions.id
+
+Ref: doc_folders.accessWorkflowId > wf_definitions.id
 
 Ref: doc_folders.parentId - doc_folders.id
 

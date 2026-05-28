@@ -62,6 +62,7 @@ export class DocFolderService {
           isWorkspace: dto.isWorkspace || false,
           defaultWorkflowId: dto.defaultWorkflowId || null,
           deleteWorkflowId: dto.deleteWorkflowId || null, 
+          accessWorkflowId: dto.accessWorkflowId || null, // 🌟 [เพิ่มใหม่] บันทึกสายอนุมัติการขอสิทธิ์เข้าถึง
         },
       });
 
@@ -148,118 +149,56 @@ export class DocFolderService {
   }
 
 // ==========================================
-  // ✏️ 2. แก้ไขข้อมูลแฟ้ม (Full Security Check + Role Limit)
+  // 📝 2. อัปเดตข้อมูลโฟลเดอร์ (แก้ไขชื่อ, ตั้งค่า Workspace, Workflow)
   // ==========================================
-  async updateFolder(companyId: number, folderId: number, userId: number, roleId: number, dto: UpdateFolderDto | any) { 
+  async updateFolder(companyId: number, id: number, dto: UpdateFolderDto | any) {
     const folder = await this.prisma.docFolder.findFirst({
-      where: { id: folderId, companyId: companyId }
+      where: { id, companyId }
     });
+    
+    if (!folder) throw new NotFoundException('ไม่พบโฟลเดอร์ที่ต้องการแก้ไข');
 
-    if (!folder) throw new NotFoundException('ไม่พบโฟลเดอร์ที่ระบุ หรือคุณไม่มีสิทธิ์');
-
-    // 🛡️ 1. ตรวจสอบสิทธิ์การเป็น "ผู้ดูแลแฟ้ม" (canDelete)
-    let isManager = false;
-    if (roleId === 1) {
-      isManager = true;
-    } else {
-      isManager = await this.hasFolderAccess(folderId, userId, roleId, 'canDelete');
-    }
-
-    // 🛑 2. [สำคัญ] ถ้าไม่ใช่ผู้ดูแลแฟ้ม ให้ "ล็อก/เขียนทับ" ฟิลด์ระดับสูงทั้งหมดด้วยค่าเดิมในระบบ
-    // จะได้อัปเดตได้เฉพาะ name และ description เท่านั้น (ต่อให้หน้าบ้านแอบส่งค่ามา ก็จะโดนตีกลับเป็นค่าเดิม)
-    if (!isManager) {
-      dto.isWorkspace = folder.isWorkspace;
-      dto.defaultWorkflowId = folder.defaultWorkflowId;
-      dto.deleteWorkflowId = folder.deleteWorkflowId;
-    }
-
-    // ตรวจสอบชื่อซ้ำ
-    if (dto.name && dto.name !== folder.name) {
+    // ตรวจสอบชื่อซ้ำ กรณีมีการเปลี่ยนชื่อหรือย้าย parent
+    if (dto.name || dto.parentId !== undefined) {
+      const checkName = dto.name || folder.name;
+      const checkParentId = dto.parentId !== undefined ? dto.parentId : folder.parentId;
+      
       const existing = await this.prisma.docFolder.findFirst({
         where: {
-          companyId: companyId,
-          parentId: folder.parentId, 
-          name: dto.name,
-        },
+          companyId,
+          parentId: checkParentId,
+          name: checkName,
+          id: { not: id } // ไม่นับตัวเอง
+        }
       });
       if (existing) throw new BadRequestException('ชื่อโฟลเดอร์นี้มีอยู่แล้วในตำแหน่งเดียวกัน');
     }
 
-    // 🌟 [SaaS Logic] ตรวจสอบสิทธิ์เฉพาะตอนที่มีการ "ขอตั้งค่า Workflow ลบใหม่" เท่านั้น
-    // (พนักงานธรรมดาจะหลุดเงื่อนไขนี้ไปเลย เพราะ dto.deleteWorkflowId ถูกทับเป็นค่าเดิมแล้วในด่านที่ 2)
+    // 🌟 [SaaS Logic] ถ้ามีการตั้งค่า deleteWorkflowId ใหม่ ต้องเช็คสิทธิ์ Enterprise
     if (dto.deleteWorkflowId && dto.deleteWorkflowId !== folder.deleteWorkflowId) {
       const hasEnterpriseFeature = await this.prisma.orgSubscription.findFirst({
         where: { 
           companyId: companyId, 
-          module: { code: 'MOD_DOC_SECURE_DELETE' },
+          module: { code: 'MOD_DOC_SECURE_DELETE' }, 
           status: 'ACTIVE' 
         }
       });
-
       if (!hasEnterpriseFeature) {
-        throw new ForbiddenException('ฟีเจอร์ "สายอนุมัติการทำลายเอกสาร" สงวนสิทธิ์สำหรับแพ็กเกจ Enterprise เท่านั้น กรุณาอัปเกรดแพ็กเกจของคุณ');
+        throw new ForbiddenException('ฟีเจอร์ "สายอนุมัติการทำลายเอกสาร" สงวนสิทธิ์สำหรับแพ็กเกจ Enterprise เท่านั้น');
       }
     }
 
-    // 🛑 [SECURITY DOWNGRADE CHECK] 🛑
-    if (folder.isWorkspace === true && dto.isWorkspace === false) {
-      
-      // 🔒 1. ตรวจสอบว่ามีเอกสารข้างใน ติด Workflow อยู่หรือไม่
-      const allFolderIdsToCheck = await this.getAllFolderIdsRecursive(folderId);
-      
-      const lockedFilesCount = await this.prisma.docFile.count({
-        where: { 
-          folderId: { in: allFolderIdsToCheck }, 
-          companyId: companyId,
-          wfRequest: {
-            status: { in: ['PENDING', 'IN_PROGRESS'] } 
-          }
-        }
-      });
-
-      if (lockedFilesCount > 0) {
-        throw new BadRequestException(`ไม่สามารถปิดโหมด Workspace ได้ เนื่องจากมีเอกสารในแฟ้มนี้ (หรือแฟ้มย่อย) จำนวน ${lockedFilesCount} รายการ กำลังอยู่ในกระบวนการรออนุมัติ`);
-      }
-
-      // 📋 2. ถ้าแฟ้มนี้มี Workflow คุมอยู่ ให้ส่งตัวแฟ้มเองเข้า Workflow
-      if (folder.defaultWorkflowId) {
-        const request = await this.prisma.wfRequest.create({
-          data: {
-            companyId: companyId,
-            workflowId: folder.defaultWorkflowId, 
-            requesterId: userId,
-            businessType: 'FOLDER_SECURITY_DOWNGRADE', 
-            businessId: String(folderId), 
-            topic: `ขออนุมัติปิดโหมด Workspace ของโฟลเดอร์: ${dto.name || folder.name}`, 
-            data: { 
-              name: dto.name || folder.name,
-              description: dto.description ?? folder.description,
-              isWorkspace: false,
-              defaultWorkflowId: dto.defaultWorkflowId ?? folder.defaultWorkflowId,
-              deleteWorkflowId: dto.deleteWorkflowId ?? folder.deleteWorkflowId
-            }
-          }
-        });
-
-        return {
-          success: true,
-          message: 'ระบบได้ส่งคำร้องขอปิดโหมด Workspace เข้าสู่สายอนุมัติเรียบร้อยแล้ว',
-          workflowRequestId: request.id,
-          status: 'PENDING_APPROVAL'
-        };
-      }
-    }
-
-    // 🔄 กรณีปกติ: อัปเดตลงฐานข้อมูลทันที
     return this.prisma.docFolder.update({
-      where: { id: folderId },
+      where: { id },
       data: {
         name: dto.name,
         description: dto.description,
+        parentId: dto.parentId,
         isWorkspace: dto.isWorkspace,
         defaultWorkflowId: dto.defaultWorkflowId,
-        deleteWorkflowId: dto.deleteWorkflowId, 
-      },
+        deleteWorkflowId: dto.deleteWorkflowId,
+        accessWorkflowId: dto.accessWorkflowId, // 🌟 [เพิ่มใหม่] อัปเดตสายอนุมัติการขอสิทธิ์เข้าถึง
+      }
     });
   }
 

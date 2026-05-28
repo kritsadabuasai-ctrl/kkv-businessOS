@@ -27,6 +27,11 @@ export class CreateFolderDto {
   @IsInt()
   defaultWorkflowId?: number;
 
+  // 🌟 [เพิ่มใหม่ล่าสุด] สายอนุมัติสำหรับขอสิทธิ์เข้าถึง (Access Request)
+  @IsOptional()
+  @IsInt()
+  accessWorkflowId?: number;
+
   @IsOptional()
   @IsInt()
   deleteWorkflowId?: number;

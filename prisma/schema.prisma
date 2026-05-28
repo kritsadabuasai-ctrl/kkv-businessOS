@@ -2044,6 +2044,7 @@ model WfDefinition {
   // 🌟 [เพิ่มใหม่] รับค่ากลับจากตาราง DocFolder
   defaultFolders DocFolder[] @relation("DefaultFolderWorkflow")
   deleteFolders  DocFolder[] @relation("DeleteFolderWorkflow")
+  accessFolders  DocFolder[] @relation("AccessFolderWorkflow")
 
   ///รายละเอียดหรือคำอธิบายเพิ่มเติมเกี่ยวกับกระบวนการนี้
   description String?
@@ -5924,6 +5925,10 @@ model DocFolder {
   /// 🌟 [เพิ่มใหม่] สายอนุมัติสำหรับ "ลบทำลาย" เอกสาร
   deleteWorkflowId  Int?      @map("delete_workflow_id")
   deleteWorkflow    WfDefinition? @relation("DeleteFolderWorkflow", fields: [deleteWorkflowId], references: [id])
+
+  // 🌟 เพิ่มฟิลด์นี้เข้าไป เพื่อกำหนดสายอนุมัติการขอสิทธิ์เฉพาะโฟลเดอร์
+  accessWorkflowId  Int?
+  accessWorkflow    WfDefinition? @relation("AccessFolderWorkflow", fields: [accessWorkflowId], references: [id])
   
   /// โครงสร้าง Parent-Child เพื่อทำ Sub-folder
   parentId    Int?

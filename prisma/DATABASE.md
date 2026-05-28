@@ -1927,6 +1927,7 @@ erDiagram
   Boolean isWatermarkEnabled
   Int defaultWorkflowId FK "nullable"
   Int delete_workflow_id FK "nullable"
+  Int accessWorkflowId FK "nullable"
   Int parentId FK "nullable"
   DateTime createdAt
   DateTime updatedAt
@@ -3012,6 +3013,7 @@ erDiagram
 "doc_folders" }o--|| "org_companies" : company
 "doc_folders" }o--o| "wf_definitions" : defaultWorkflow
 "doc_folders" }o--o| "wf_definitions" : deleteWorkflow
+"doc_folders" }o--o| "wf_definitions" : accessWorkflow
 "doc_folders" }o--o| "doc_folders" : parent
 "doc_files" }o--|| "org_companies" : company
 "doc_files" }o--o| "doc_folders" : folder
@@ -5862,6 +5864,7 @@ Properties as follows:
 - `isWatermarkEnabled`: 💧 Future Feature: Dynamic Watermark
 - `defaultWorkflowId`: 🌟 2. เพิ่มการผูก Workflow เข้ากับโฟลเดอร์นี้
 - `delete_workflow_id`: 🌟 [เพิ่มใหม่] สายอนุมัติสำหรับ "ลบทำลาย" เอกสาร
+- `accessWorkflowId`:
 - `parentId`: โครงสร้าง Parent-Child เพื่อทำ Sub-folder
 - `createdAt`:
 - `updatedAt`:

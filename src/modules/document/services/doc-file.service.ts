@@ -971,12 +971,20 @@ async verifyFileIntegrity(companyId: number, fileId: number) {
       throw new BadRequestException('คุณได้ส่งคำขอสิทธิ์สำหรับไฟล์นี้ไปแล้ว กรุณารอการอนุมัติ');
     }
 
-    const mapping = await this.prisma.wfModuleMapping.findFirst({
-      where: { companyId, moduleCode: 'DATA_ACCESS', isActive: true }
-    });
+    // 🌟 1. ค้นหา Workflow จากระดับ Folder (ไล่จากลูกไปหาแม่) ก่อน
+    let targetWorkflowId = await this.getInheritedWorkflow(file.folderId, companyId, 'ACCESS');
+
+    // 🌟 2. ถ้าในสายโฟลเดอร์ไม่มีการตั้งค่าไว้เลย ให้ไปดึงจากส่วนกลาง (Module Mapping)
+    if (!targetWorkflowId) {
+      const mapping = await this.prisma.wfModuleMapping.findFirst({
+        where: { companyId, moduleCode: 'DATA_ACCESS', isActive: true }
+      });
+      if (mapping) targetWorkflowId = mapping.workflowId;
+    }
     
-    if (!mapping) {
-      throw new BadRequestException('ระบบยังไม่ได้ตั้งค่าสายอนุมัติสำหรับการขอเข้าถึงข้อมูล (DATA_ACCESS)');
+    // 🌟 3. ถ้าหาจากทั้งสองที่แล้วยังไม่มี ให้ฟ้อง Error
+    if (!targetWorkflowId) {
+      throw new BadRequestException('ระบบยังไม่ได้ตั้งค่าสายอนุมัติสำหรับการขอเข้าถึงข้อมูล (DATA_ACCESS) กรุณาตั้งค่าที่แฟ้มข้อมูลหรือส่วนกลางก่อน');
     }
 
     let topicPrefix = 'ขอสิทธิ์เข้าดูไฟล์';
@@ -1000,7 +1008,7 @@ async verifyFileIntegrity(companyId: number, fileId: number) {
 
     const request: any = await this.wfRequestService.create(companyId, userId, {
       moduleCode: 'DATA_ACCESS',
-      workflowId: mapping.workflowId,
+      workflowId: targetWorkflowId, // 🌟 ใช้ Workflow ID ที่หามาได้
       businessId: String(accessReq.id),
       topic: `${topicPrefix}: ${file.fileName}`, 
     } as any);
@@ -1894,7 +1902,8 @@ async verifyFileIntegrity(companyId: number, fileId: number) {
  // ==========================================
   // 🔍 Helper: ฟังก์ชันปีนหา Workflow จากแฟ้มแม่ (Folder Inheritance)
   // ==========================================
-  private async getInheritedWorkflow(folderId: any, companyId: number, type: 'UPLOAD' | 'DELETE'): Promise<number | null> {
+  // 🌟 เพิ่มไทป์ 'ACCESS' เข้าไป
+  private async getInheritedWorkflow(folderId: any, companyId: number, type: 'UPLOAD' | 'DELETE' | 'ACCESS'): Promise<number | null> {
     if (!folderId) return null;
     
     let currentFolderId: number | null = Number(folderId);
@@ -1906,13 +1915,17 @@ async verifyFileIntegrity(companyId: number, fileId: number) {
         select: { 
           parentId: true, 
           defaultWorkflowId: true, 
-          deleteWorkflowId: true
+          deleteWorkflowId: true,
+          accessWorkflowId: true // 🌟 ดึงข้อมูล accessWorkflowId ออกมาด้วย
         }
       });
       
       if (!folder) break;
 
-      const targetWfId = type === 'UPLOAD' ? folder.defaultWorkflowId : folder.deleteWorkflowId;
+      // 🌟 เพิ่มเงื่อนไขเพื่อดึง ID ให้ถูกประเภท
+      const targetWfId = type === 'UPLOAD' ? folder.defaultWorkflowId : 
+                         type === 'DELETE' ? folder.deleteWorkflowId : 
+                         folder.accessWorkflowId;
 
       if (targetWfId) {
         return targetWfId; 
