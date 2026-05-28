@@ -1637,9 +1637,22 @@ async verifyFileIntegrity(companyId: number, fileId: number) {
 
 
 // ==========================================
-  // ดึงรายการไฟล์ในโฟลเดอร์ (🌟 เพิ่มระบบ Personal Staging กั้นไฟล์หน้า Root)
+  // ดึงรายการไฟล์ในโฟลเดอร์ (🌟 อัปเดตกฎ: คนอัปโหลดไม่มีสิทธิ์ถาวรเมื่อไฟล์เข้าแฟ้ม)
   // ==========================================
   async getFilesByFolder(companyId: number, folderId?: number, userId: number = 0, roleId: number = 0) {
+    
+    // 🌟 1. คำนวณสิทธิ์ระดับโฟลเดอร์ล่วงหน้า
+    let folderHasViewAccess = false;
+    if (folderId) {
+      if (roleId === 1) {
+        folderHasViewAccess = true;
+      } else {
+        folderHasViewAccess = await this.hasFolderAccess(folderId, userId, roleId, 'canView');
+      }
+    } else {
+      folderHasViewAccess = true; // หน้า Root อนุญาตให้ผ่านไปกรองระดับไฟล์ด้านล่าง
+    }
+
     const files = await this.prisma.docFile.findMany({
       where: {
         companyId,
@@ -1656,27 +1669,54 @@ async verifyFileIntegrity(companyId: number, fileId: number) {
       orderBy: { createdAt: 'desc' },
     });
 
-    // 🌟 [SECURITY LOGIC] กรองไฟล์ก่อนส่งไปหน้าบ้าน
+    // 🌟 2. กรองไฟล์ก่อนส่งไปหน้าบ้าน
     const filteredFiles = files.filter(file => {
-      // กรณีที่ 1: ไฟล์ยังไม่ได้จัดเก็บ (อยู่หน้า Root)
+      // กรณีไฟล์ยังไม่เข้าแฟ้ม (หน้า Root)
       if (!file.folderId) {
-        if (roleId === 1) return true; // Super Admin มองเห็นไฟล์ขยะทั้งหมด
-        if (file.uploadedById === userId) return true; // เจ้าของไฟล์มองเห็นไฟล์ตัวเอง
-        return false; // 🛑 คนอื่นห้ามเห็นไฟล์ที่ยังไม่จัดเก็บเด็ดขาด!
+        if (roleId === 1) return true; 
+        if (file.uploadedById === userId) return true; // ต้องให้เห็นไฟล์ตัวเองชั่วคราวเพื่อรอจัดเก็บ
+        return false; 
       }
-      // กรณีที่ 2: ไฟล์อยู่ในโฟลเดอร์แล้ว ให้แสดงปกติ (เพราะโฟลเดอร์มี Access Guard คุมการคลิกดูอยู่แล้ว)
-      return true; 
+      return true; // ถ้ามีแฟ้มแล้ว ให้ผ่านไปเช็กกุญแจล็อกด้านล่าง
     });
 
     return filteredFiles.map(file => {
+      // 🌟 3. คำนวณสิทธิ์การเข้าถึง "ไฟล์ฉบับนี้" 
+      let fileHasAccess = false;
+      
+      if (roleId === 1) {
+        fileHasAccess = true; // Super Admin ทะลุได้หมด
+      } 
+      // 🚨 [แก้ไขแล้ว] ให้สิทธิ์คนอัปโหลด *เฉพาะ* ตอนที่ไฟล์ยังไม่เข้าโฟลเดอร์เท่านั้น
+      else if (!file.folderId && file.uploadedById === userId) {
+        fileHasAccess = true; 
+      } 
+      else {
+        // 🚨 ถ้าเข้าโฟลเดอร์แล้ว เช็กสิทธิ์ตามกฎล้วนๆ ไม่สนว่าเป็นคนอัปโหลดหรือไม่
+        const now = new Date();
+        const hasSpecificFileAccess = file.accessRoles && file.accessRoles.some(acc => {
+          if (acc.expiresAt && new Date(acc.expiresAt) < now) return false;
+          return (acc.roleId === roleId || acc.userId === userId) && acc.canView;
+        });
+
+        if (hasSpecificFileAccess) {
+          fileHasAccess = true;
+        } else if (file.folderId) {
+          fileHasAccess = folderHasViewAccess; 
+        }
+      }
+
       const isLockedByPassword = !!file.filePassword; 
       const isPendingApproval = file.wfRequest && ['PENDING', 'IN_PROGRESS'].includes(file.wfRequest.status);
-      const shouldHideUrl = isLockedByPassword || isPendingApproval;
+      
+      // ซ่อน URL ถ้าไม่มีสิทธิ์
+      const shouldHideUrl = isLockedByPassword || isPendingApproval || !fileHasAccess;
 
       return {
         ...file,
         filePassword: undefined, 
-        isLocked: isLockedByPassword,
+        isLocked: isLockedByPassword || !fileHasAccess, // 🔒 ล็อกกุญแจทันทีถ้าไม่มีสิทธิ์
+        hasAccess: fileHasAccess, 
         isPendingApproval: isPendingApproval, 
         currentUrl: shouldHideUrl ? null : file.currentUrl, 
         workflowStatus: file.wfRequest ? file.wfRequest.status : null,
