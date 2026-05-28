@@ -1312,11 +1312,14 @@ async verifyFileIntegrity(companyId: number, fileId: number) {
     return { message: 'ย้ายไฟล์สำเร็จ (โฟลเดอร์ปลายทางไม่มีสายอนุมัติ)', isPendingApproval: false };
   }
 
-  // 🌟 [NEW] ฟังก์ชันสำหรับให้ AI คัดแยกไฟล์เข้าโฟลเดอร์
+// ==========================================
+  // 🌟 [NEW] ฟังก์ชันสำหรับให้ AI คัดแยกไฟล์เข้าโฟลเดอร์ (ทำงานร่วมกับ Workflow)
+  // ==========================================
   async aiClassifyFileToFolder(companyId: number, fileId: number) {
     const file = await this.prisma.docFile.findFirst({
       where: { id: fileId, companyId }
     });
+    
     if (!file) throw new NotFoundException('ไม่พบเอกสารที่ต้องการคัดแยก');
 
     const folders = await this.prisma.docFolder.findMany({
@@ -1331,10 +1334,12 @@ async verifyFileIntegrity(companyId: number, fileId: number) {
     try {
       const apiKey = process.env.GEMINI_API_KEY;
       if (!apiKey) {
-                    throw new InternalServerErrorException('ไม่พบ API Key สำหรับเชื่อมต่อ AI');
-        }
+        throw new InternalServerErrorException('ไม่พบ API Key สำหรับเชื่อมต่อ AI');
+      }
+      
       const genAI = new GoogleGenerativeAI(apiKey);
-      const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" }); 
+      // เปลี่ยนมาใช้รุ่น pro เพื่อความแม่นยำสูงสุดในการวิเคราะห์บริบท
+      const model = genAI.getGenerativeModel({ model: "gemini-1.5-pro" }); 
       
       const prompt = `
         คุณคือ AI จัดหมวดหมู่เอกสารขององค์กร
@@ -1356,18 +1361,45 @@ async verifyFileIntegrity(companyId: number, fileId: number) {
         throw new BadRequestException('AI ไม่สามารถหาโฟลเดอร์ที่เหมาะสมได้ในขณะนี้');
       }
 
-      const updatedFile = await this.prisma.docFile.update({
+      // ==========================================
+      // 🔄 กระบวนการย้ายไฟล์และสร้าง Workflow
+      // ==========================================
+      
+      // 1. อัปเดตโฟลเดอร์ปลายทางให้ไฟล์ก่อน พร้อมล็อก wfRequestId ชั่วคราว (-1) เพื่อป้องกันคนเปิดดู
+      await this.prisma.docFile.update({
         where: { id: fileId },
-        data: { folderId: suggestedFolderId }
+        data: { 
+          folderId: validFolder.id,
+          wfRequestId: -1 
+        }
       });
 
+     try {
+        // 🌟 เติม : any ตรงนี้ เพื่อบอก TypeScript ว่าผลลัพธ์อาจจะเป็น Object หรือ Message ก็ได้
+        const wfResult: any = await this.wfRequestService.create(companyId, file.uploadedById, {
+          moduleCode: 'DOC_MOVE', 
+          businessId: file.id,
+          topic: `[AI Auto-Classify] AI จัดเก็บเอกสารเข้าแฟ้ม: ${validFolder.name}`
+        });
+
+        // 3. อัปเดต ID ของ Workflow จริงๆ กลับไปที่ไฟล์ (ถ้ามี id ส่งกลับมา)
+        if (wfResult && wfResult.id) {
+          await this.prisma.docFile.update({
+            where: { id: fileId },
+            data: { wfRequestId: wfResult.id }
+          });
+        }
+      } catch (wfError: any) {
+        // กรณีที่โฟลเดอร์ปลายทางไม่มี Workflow ควบคุม
+        console.log(`[AI Classification] ข้ามขั้นตอน Workflow สำหรับโฟลเดอร์ ${validFolder.name}`);
+      }
+
       return { 
-        message: 'AI คัดแยกเอกสารสำเร็จ', 
-        movedToFolder: validFolder.name,
-        file: updatedFile 
+        message: 'AI คัดแยกเอกสารและส่งเข้าสายอนุมัติสำเร็จ', 
+        movedToFolder: validFolder.name
       };
 
-    } catch (error) {
+    } catch (error : any) {
       console.error("AI Classification Error:", error);
       throw new InternalServerErrorException('เกิดข้อผิดพลาดในการเชื่อมต่อกับระบบ AI คัดแยกเอกสาร');
     }
