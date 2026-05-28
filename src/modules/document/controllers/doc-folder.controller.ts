@@ -37,19 +37,18 @@ export class DocFolderController {
   }
 
  @ApiOperation({ summary: 'แก้ไขข้อมูลแฟ้ม' })
-  @RequirePermissions('document:edit') // หรือตามสิทธิ์ที่คุณตั้งไว้
+  @RequirePermissions('document:update') // 🌟 1. เปลี่ยนจาก edit เป็น update ให้ตรงกับสิทธิ์มาตรฐาน
   @Patch(':id')
   updateFolder(
     @Param('id', ParseIntPipe) id: number,
     @Body() dto: UpdateFolderDto,
     @Req() req: any
   ) {
-    // 1. ดึง userId ออกมาจาก Token (req.user)
     const userId = req.user?.id || req.user?.userId;
+    const roleId = Number(req.user?.roleId || 0); // 🌟 2. ดึง roleId ไปด้วยเพื่อเช็คสิทธิ์ผู้จัดการแฟ้ม
     
-    // 2. ส่ง Arguments ไป 4 ตัวให้ครบตามที่ Service ต้องการ
-    // (companyId, folderId, userId, dto)
-    return this.folderService.updateFolder(req.user?.companyId, id, userId, dto);
+    // 🌟 3. เพิ่ม roleId เข้าไปใน Parameter ที่ส่งให้ Service
+    return this.folderService.updateFolder(req.user?.companyId, id, userId, roleId, dto);
   }
 
   @ApiOperation({ summary: 'อัปเดตสิทธิ์การเข้าถึงแฟ้ม' })
