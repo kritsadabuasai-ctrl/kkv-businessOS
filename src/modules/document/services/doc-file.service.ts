@@ -1884,10 +1884,13 @@ async verifyFileIntegrity(companyId: number, fileId: number) {
       } 
       // กลุ่มที่ 2: Staff ทั่วไป / ผู้ชม (จะเห็นเฉพาะไฟล์ที่ผ่านการอนุมัติแล้วเท่านั้น)
       else {
-        const activeVersion = file.versions.find((v: any) => v.isCurrent === true);
-        const isApproved = file.wfRequest && file.wfRequest.status === 'APPROVED';
+        // 🌟 [แก้บั๊ก] ถ้าไฟล์ไม่มี wfRequestId แปลว่ามันถูก "ปลดล็อก" และใช้งานได้จริงแล้ว (อนุมัติแล้ว หรือไม่มีสายอนุมัติแต่แรก)
+        const isUnlockedOrApproved = !file.wfRequestId || (file.wfRequest && file.wfRequest.status === 'APPROVED');
+        
+        // เผื่อกรณี V2 กำลังรออนุมัติ แต่ V1 เคยอนุมัติไปแล้ว (isCurrent = true) ก็ต้องให้เห็น
+        const hasActiveVersion = file.versions.find((v: any) => v.isCurrent === true);
 
-        if (activeVersion || isApproved) {
+        if (isUnlockedOrApproved || hasActiveVersion) {
            isVisible = true; 
         }
       }
