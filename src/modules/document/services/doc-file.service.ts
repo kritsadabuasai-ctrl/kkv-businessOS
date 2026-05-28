@@ -1818,7 +1818,7 @@ async verifyFileIntegrity(companyId: number, fileId: number) {
 
 
 // ==========================================
-  // ดึงรายการไฟล์ในโฟลเดอร์ (🌟 อัปเดตกฎ: คนอัปโหลดไม่มีสิทธิ์ถาวรเมื่อไฟล์เข้าแฟ้ม)
+  // ดึงรายการไฟล์ในโฟลเดอร์ (🌟 อัปเดตกฎ: คนอัปโหลดไม่มีสิทธิ์ถาวรเมื่อไฟล์เข้าแฟ้ม + แยก Flag ชัดเจน)
   // ==========================================
   async getFilesByFolder(companyId: number, folderId?: number, userId: number = 0, roleId: number = 0) {
     
@@ -1868,7 +1868,7 @@ async verifyFileIntegrity(companyId: number, fileId: number) {
       if (roleId === 1) {
         fileHasAccess = true; // Super Admin ทะลุได้หมด
       } 
-      // 🚨 [แก้ไขแล้ว] ให้สิทธิ์คนอัปโหลด *เฉพาะ* ตอนที่ไฟล์ยังไม่เข้าโฟลเดอร์เท่านั้น
+      // 🚨 ให้สิทธิ์คนอัปโหลด *เฉพาะ* ตอนที่ไฟล์ยังไม่เข้าโฟลเดอร์เท่านั้น
       else if (!file.folderId && file.uploadedById === userId) {
         fileHasAccess = true; 
       } 
@@ -1890,14 +1890,17 @@ async verifyFileIntegrity(companyId: number, fileId: number) {
       const isLockedByPassword = !!file.filePassword; 
       const isPendingApproval = file.wfRequest && ['PENDING', 'IN_PROGRESS'].includes(file.wfRequest.status);
       
-      // ซ่อน URL ถ้าไม่มีสิทธิ์
+      // ซ่อน URL ถ้าไม่มีสิทธิ์, ติดรหัสผ่าน, หรือกำลังรออนุมัติ
       const shouldHideUrl = isLockedByPassword || isPendingApproval || !fileHasAccess;
 
       return {
         ...file,
         filePassword: undefined, 
-        isLocked: isLockedByPassword || !fileHasAccess, // 🔒 ล็อกกุญแจทันทีถ้าไม่มีสิทธิ์
-        hasAccess: fileHasAccess, 
+        
+        // 🚨 [แก้ไขจุดนี้] แยก Flag ออกจากกันให้ชัดเจน
+        isLocked: isLockedByPassword, // 🔒 บอกหน้าบ้านว่าติด "รหัสผ่าน" (ป้ายสีชมพู)
+        hasAccess: fileHasAccess,     // ✋ บอกหน้าบ้านว่าต้องขึ้นปุ่ม "ขอสิทธิ์" (ป้ายสีส้ม)
+        
         isPendingApproval: isPendingApproval, 
         currentUrl: shouldHideUrl ? null : file.currentUrl, 
         workflowStatus: file.wfRequest ? file.wfRequest.status : null,
