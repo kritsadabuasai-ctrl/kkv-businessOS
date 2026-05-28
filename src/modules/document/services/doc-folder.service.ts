@@ -233,23 +233,63 @@ export class DocFolderService {
 
 
   // ==========================================
-  // 🌟 [แก้ไข] อัปเดตสิทธิ์โฟลเดอร์ (รับ Rules ที่มีทั้ง Role และ User)
+  // 🌟 [แก้ไข] อัปเดตสิทธิ์โฟลเดอร์ (รับ Rules ที่มีทั้ง Role และ User + Access Guard)
   // ==========================================
-  async updateFolderAccess(companyId: number, folderId: number, rules: any[]) {
+  async updateFolderAccess(companyId: number, folderId: number, userId: number, roleId: number, rules: any[]) {
     const folder = await this.prisma.docFolder.findFirst({
       where: { id: folderId, companyId: companyId }
     });
 
     if (!folder) throw new NotFoundException('ไม่พบโฟลเดอร์ที่ระบุ หรือคุณไม่มีสิทธิ์');
 
-    // ล้างสิทธิ์เก่าทิ้งทั้งหมดของแฟ้มนี้
+    // 🛡️ 1. ตรวจสอบสิทธิ์การเป็น "ผู้ดูแล" (Admin / Workspace Manager)
+    let canManageAccess = false;
+
+    // กฎข้อที่ 1: เป็น Super Admin ของระบบ (มีอำนาจสูงสุด ทะลุได้ทุกโฟลเดอร์)
+    if (roleId === 1) {
+      canManageAccess = true;
+    } 
+    // กฎข้อที่ 2: เช็คสิทธิ์ 'canDelete' ในโฟลเดอร์นี้
+    else {
+      // ดึง Role ทั้งหมดที่ User คนนี้ถืออยู่ ณ ปัจจุบัน
+      const userRoles = await this.prisma.secUserRole.findMany({
+        where: { userId: userId, companyId: companyId }
+      });
+      const myRoleIds = userRoles.map(ur => ur.roleId);
+      if (roleId > 0 && !myRoleIds.includes(roleId)) myRoleIds.push(roleId);
+
+      // ค้นหาว่าปัจจุบัน User หรือ Role ที่เขาถืออยู่ ได้รับสิทธิ์ 'canDelete' หรือไม่
+      const highestAccess = await this.prisma.docFolderAccess.findFirst({
+        where: {
+          folderId: folderId,
+          companyId: companyId,
+          OR: [
+            { userId: userId },
+            { roleId: { in: myRoleIds } }
+          ],
+          canDelete: true // 🌟 ใช้สิทธิ์ Delete เป็นตัวแทนของคำว่า "Manager ของโฟลเดอร์นี้"
+        }
+      });
+
+      if (highestAccess) {
+        canManageAccess = true;
+      }
+    }
+
+    // 🚨 ถ้าไม่ใช่ Super Admin และไม่ได้มีสิทธิ์ canDelete ในโฟลเดอร์นี้ -> เตะออกทันที
+    if (!canManageAccess) {
+      throw new ForbiddenException('ไม่อนุญาตให้แก้ไขสิทธิ์ (สงวนสิทธิ์เฉพาะผู้ดูแลระบบ หรือผู้จัดการที่มีสิทธิ์ลบข้อมูลในโฟลเดอร์นี้เท่านั้น)');
+    }
+
+    // ==========================================
+    // ✅ 2. ถ้าผ่านด่านมาได้ ให้ทำการเคลียร์สิทธิ์เดิมและบันทึกสิทธิ์ใหม่
+    // ==========================================
     await this.prisma.docFolderAccess.deleteMany({ where: { folderId } });
 
-    // บันทึกสิทธิ์ใหม่
     if (rules && rules.length > 0) {
-      const accessData = rules.map(rule => ({
+      const accessData = rules.map((rule: any) => ({
+        folderId,
         companyId: companyId,
-        folderId: folderId,
         roleId: rule.roleId || null,
         userId: rule.userId || null,
         canView: rule.canView || false,
@@ -259,7 +299,7 @@ export class DocFolderService {
       }));
       await this.prisma.docFolderAccess.createMany({ data: accessData });
     }
-    
+
     return { message: 'อัปเดตสิทธิ์การเข้าถึงโฟลเดอร์เรียบร้อยแล้ว' };
   }
 

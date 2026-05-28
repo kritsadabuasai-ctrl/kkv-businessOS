@@ -52,18 +52,19 @@ export class DocFolderController {
     return this.folderService.updateFolder(req.user?.companyId, id, userId, dto);
   }
 
-  // ==========================================
-  // 🌟 จุดที่แก้ไข: เปลี่ยนจาก roles เป็น rules 
-  // ==========================================
   @ApiOperation({ summary: 'อัปเดตสิทธิ์การเข้าถึงแฟ้ม' })
   @RequirePermissions('document:update')
   @Put(':id/access')
   updateAccess(
     @Param('id', ParseIntPipe) id: number,
-    @Body('rules') rules: any[], // 🌟 เปลี่ยนตรงนี้เพื่อรับค่าจากหน้าบ้าน
+    @Body('rules') rules: any[],
     @Req() req: any
   ) {
-    return this.folderService.updateFolderAccess(req.user.companyId, id, rules); // 🌟 ส่งตัวแปรเข้าไปใน Service
+    // 🌟 ดึง userId, roleId ออกมาส่งให้ Service
+    const userId = req.user?.id || req.user?.userId;
+    const roleId = Number(req.user?.roleId || 0);
+
+    return this.folderService.updateFolderAccess(req.user.companyId, id, userId, roleId, rules); 
   }
 
   // ==========================================

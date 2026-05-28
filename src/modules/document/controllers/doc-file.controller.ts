@@ -366,7 +366,11 @@ export class DocFileController {
     @Body() dto: UpdateFileAccessDto,
     @Req() req: any
   ) {
-    return this.docFileService.updateFileAccess(req.user.companyId, id, dto);
+    // 🌟 ดึง userId, roleId ออกมาส่งให้ Service
+    const userId = req.user?.id || req.user?.userId;
+    const roleId = Number(req.user?.roleId || 0);
+
+    return this.docFileService.updateFileAccess(req.user.companyId, id, userId, roleId, dto);
   }
 
   // 🌟 [NEW] Endpoint สำหรับให้ AI คัดแยกไฟล์เข้าโฟลเดอร์อัตโนมัติ

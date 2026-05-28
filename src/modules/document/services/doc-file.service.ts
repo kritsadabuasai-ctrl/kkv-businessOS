@@ -1591,16 +1591,42 @@ async verifyFileIntegrity(companyId: number, fileId: number) {
   }
 
  // ==========================================
-  // 🌟 [แก้ไข] อัปเดตสิทธิ์ไฟล์ (รับ Rules ที่มีทั้ง Role และ User)
+  // 🌟 [แก้ไข] อัปเดตสิทธิ์ไฟล์ (รับ Rules ที่มีทั้ง Role และ User + Access Guard)
   // ==========================================
-  async updateFileAccess(companyId: number, fileId: number, dto: any) { 
+  async updateFileAccess(companyId: number, fileId: number, userId: number, roleId: number, dto: any) { 
     const file = await this.prisma.docFile.findFirst({
       where: { id: fileId, companyId: companyId },
-      select: { companyId: true }
+      include: { folder: true } // ดึง Folder มาเช็กด้วย
     });
 
     if (!file) throw new NotFoundException('ไม่พบไฟล์ที่ระบุ หรือคุณไม่มีสิทธิ์');
 
+    // 🛡️ 1. ตรวจสอบสิทธิ์การเป็น "ผู้จัดการไฟล์"
+    let canManageAccess = false;
+
+    // กฎข้อ 1: Super Admin ทำได้เสมอ
+    if (roleId === 1) {
+      canManageAccess = true;
+    }
+    // กฎข้อ 2: ถ้าไฟล์นี้มีโฟลเดอร์แม่ ให้เช็กสิทธิ์ canDelete ในโฟลเดอร์แม่
+    else if (file.folderId) {
+       canManageAccess = await this.hasFolderAccess(file.folderId, userId, roleId, 'canDelete');
+    }
+    // กฎข้อ 3: ถ้าเป็นไฟล์ลอยๆ (ไม่มีโฟลเดอร์) อนุญาตให้เฉพาะคนสร้างไฟล์แก้สิทธิ์ได้
+    else {
+      if (file.uploadedById === userId) {
+        canManageAccess = true;
+      }
+    }
+
+    // 🚨 ถ้าไม่ผ่านด่านใดๆ เลย -> เตะออกทันที
+    if (!canManageAccess) {
+      throw new ForbiddenException('ไม่อนุญาตให้แก้ไขสิทธิ์ (สงวนสิทธิ์เฉพาะเจ้าของไฟล์ หรือผู้จัดการโฟลเดอร์เท่านั้น)');
+    }
+
+    // ==========================================
+    // ✅ 2. ถ้าผ่านด่านมาได้ ให้เคลียร์สิทธิ์เดิมและบันทึกสิทธิ์ใหม่
+    // ==========================================
     await this.prisma.docFileAccess.deleteMany({ where: { fileId } });
 
     if (dto.rules && dto.rules.length > 0) {
@@ -1615,6 +1641,7 @@ async verifyFileIntegrity(companyId: number, fileId: number) {
       }));
       await this.prisma.docFileAccess.createMany({ data: accessData });
     }
+    
     return { message: 'อัปเดตสิทธิ์การเข้าถึงเอกสารเรียบร้อยแล้ว' };
   }
 
