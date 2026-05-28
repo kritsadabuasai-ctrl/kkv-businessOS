@@ -329,10 +329,16 @@ async processBatchActions(companyId: number, userId: number, dto: { requestIds: 
   // =========================================================
   
   // 🌟 ฟังก์ชันยกเลิกรายการ Pending ของคนอื่นในโหนดเดียวกัน
+ // 🌟 ฟังก์ชันยกเลิกรายการ Pending ของคนอื่นในโหนดเดียวกัน
   private async cancelOtherPendingActions(requestId: number, stepName: string, customComment?: string) {
-    await this.prisma.wfAction.updateMany({
-      where: { requestId: requestId, stepName: stepName, action: 'PENDING' },
-      data: { action: 'CANCELLED', comment: customComment || 'ถูกยกเลิกเนื่องจากผลการตัดสินใจในขั้นตอนนี้สิ้นสุดแล้ว' }
+    // 🚨 [แก้ไขบั๊ก] เปลี่ยนมาใช้ deleteMany ลบกล่องงานที่ค้างอยู่ออกไปเลย 
+    // เพื่อรับประกันว่างานจะหายไปจากหน้า Inbox ของผู้อนุมัติคนอื่น 100% ทันทีที่ผลโหวตสิ้นสุด
+    await this.prisma.wfAction.deleteMany({
+      where: { 
+        requestId: requestId, 
+        stepName: stepName, 
+        action: 'PENDING' 
+      }
     });
   }
 
