@@ -377,6 +377,26 @@ export class WfRequestService {
     }
   }
 
+  // =========================================================
+  // 📤 ดึงรายการ "คำขอของฉัน" (My Requests / Outbox)
+  // =========================================================
+  async getMyRequests(companyId: number, userId: number) {
+    return this.prisma.wfRequest.findMany({
+      where: {
+        companyId: companyId,
+        requesterId: userId // 🌟 ดึงเฉพาะรายการที่ User คนนี้เป็นคนสร้าง
+      },
+      include: {
+        currentNode: true, // ดึงสถานะปัจจุบันมาแสดงให้รู้ว่าติดอยู่ตรงไหน
+        actions: { // ดึงประวัติการอนุมัติล่าสุดมาด้วย (เผื่อโชว์เหตุผลที่โดน Reject)
+          orderBy: { createdAt: 'desc' },
+          take: 1
+        }
+      },
+      orderBy: { createdAt: 'desc' }
+    });
+  }
+
   private async advanceToNextNode(requestId: number, nextApproveId: number | null, requesterUserId: number, companyId: number, requestData: any, allNodes: any[]) {
     if (nextApproveId) {
       const nextNode = allNodes.find((n: any) => n.id === nextApproveId);

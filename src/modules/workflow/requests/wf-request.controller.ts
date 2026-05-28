@@ -1,5 +1,5 @@
 import { 
-  Controller, Get, Post, Put, Body, Param, ParseIntPipe, Query, UseGuards, Request ,Patch
+  Controller, Get, Post, Put, Body, Param, ParseIntPipe, Query, UseGuards, Request, Patch
 } from '@nestjs/common';
 import { WfRequestService } from './wf-request.service';
 import { CreateWfRequestDto, UpdateWfRequestDto } from './wf-request.dto';
@@ -38,6 +38,9 @@ export class WfRequestController {
     return this.service.findAll(companyId, status);
   }
 
+  // ============================================
+  // 📥 รายการที่รอฉันอนุมัติ (My Inbox)
+  // ============================================
   @Get('my-inbox')
   @RequirePermissions('workflow_request:view')
   getMyInbox(@Request() req) {
@@ -46,6 +49,21 @@ export class WfRequestController {
     return this.service.getMyInbox(companyId, userId);
   }
 
+  // ============================================
+  // 📤 คำขอของฉันที่สร้างไว้ (My Requests / Outbox)
+  // 🌟 [เพิ่มตรงนี้ครับ] ต้องอยู่ก่อน @Get(':id') เสมอ!
+  // ============================================
+  @Get('my-requests')
+  @RequirePermissions('workflow_request:view')
+  getMyRequests(@Request() req) {
+    const companyId = req.user.companyId;
+    const userId = Number(req.user.userId || req.user.sub || req.user.id);
+    return this.service.getMyRequests(companyId, userId);
+  }
+
+  // ============================================
+  // ดึงรายละเอียดตาม ID
+  // ============================================
   @Get(':id')
   @RequirePermissions('workflow_request:view')
   findOne(
@@ -56,11 +74,9 @@ export class WfRequestController {
     const userId = Number(req.user.userId || req.user.id);
     const roleId = Number(req.user.roleId || 0);
 
-    // 🌟 ส่ง userId และ roleId เพิ่มเข้าไปให้ Service คำนวณสิทธิ์
     return this.service.findOne(id, companyId, userId, roleId);
   }
 
-  // 🌟 จุดที่แก้ไขบั๊ก: ต้องเรียก actionService ไม่ใช่ service
   @Patch(':id/action')
   @RequirePermissions('workflow_request:create')
   processAction(
@@ -69,7 +85,6 @@ export class WfRequestController {
     @Body() dto: CreateWfActionDto
   ) {
     dto.requestId = id; 
-    // 🛑 แก้ไขบรรทัดนี้ ให้เรียก this.actionService แทน this.service
     return this.actionService.create(req.user.companyId, req.user.userId, dto);
   }
 }
