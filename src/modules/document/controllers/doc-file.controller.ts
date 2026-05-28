@@ -76,7 +76,10 @@ export class DocFileController {
   @Get('list')
   getFilesByFolder(@Req() req: any, @Query('folderId') folderId?: string) {
     const parsedFolderId = folderId ? parseInt(folderId, 10) : undefined;
-    return this.docFileService.getFilesByFolder(req.user.companyId, parsedFolderId);
+    // 🌟 ดึงข้อมูล User ปัจจุบันเพื่อไปเช็กสิทธิ์หน้า Root
+    const userId = req.user?.id || req.user?.userId;
+    const roleId = Number(req.user?.roleId || 0);
+    return this.docFileService.getFilesByFolder(req.user.companyId, parsedFolderId, userId, roleId);
   }
 
   @ApiOperation({ summary: 'ปลดล็อกไฟล์ที่ใส่รหัสผ่านไว้เพื่อรับ URL จริง' })
@@ -373,15 +376,15 @@ export class DocFileController {
     return this.docFileService.updateFileAccess(req.user.companyId, id, userId, roleId, dto);
   }
 
-  // 🌟 [NEW] Endpoint สำหรับให้ AI คัดแยกไฟล์เข้าโฟลเดอร์อัตโนมัติ
-  @ApiOperation({ summary: 'ใช้ AI วิเคราะห์และย้ายเอกสารเข้าโฟลเดอร์ที่เหมาะสม' })
+ @ApiOperation({ summary: 'ใช้ AI วิเคราะห์และย้ายเอกสารเข้าโฟลเดอร์ที่เหมาะสม' })
   @RequirePermissions('document:update')
   @Post(':id/ai-classify')
   async aiClassifyFile(
     @Param('id', ParseIntPipe) id: number,
+    @Body('hint') hint: string, // 🌟 เพิ่มการรับค่า hint จากหน้าบ้าน
     @Req() req: any
   ) {
-    return this.docFileService.aiClassifyFileToFolder(req.user.companyId, id);
+    return this.docFileService.aiClassifyFileToFolder(req.user.companyId, id, hint);
   }
 
   // 🌟 [NEW] Endpoint สำหรับระบบขอสิทธิ์เข้าถึง (Access Request Workflow)

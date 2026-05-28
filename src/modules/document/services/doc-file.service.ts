@@ -1313,16 +1313,15 @@ async verifyFileIntegrity(companyId: number, fileId: number) {
   }
 
 // ==========================================
-  // 🌟 [NEW] ฟังก์ชันสำหรับให้ AI คัดแยกไฟล์เข้าโฟลเดอร์ (ทำงานร่วมกับ Workflow แบบ Hierarchical + จัดการความกำกวม)
+  // 🌟 [NEW] ฟังก์ชันสำหรับให้ AI คัดแยกไฟล์เข้าโฟลเดอร์ (รองรับ Hint + จัดการความกำกวม)
   // ==========================================
-  async aiClassifyFileToFolder(companyId: number, fileId: number) {
+  async aiClassifyFileToFolder(companyId: number, fileId: number, hint?: string) {
     const file = await this.prisma.docFile.findFirst({
       where: { id: fileId, companyId }
     });
     
     if (!file) throw new NotFoundException('ไม่พบเอกสารที่ต้องการคัดแยก');
 
-    // 🌟 ดึงข้อมูลฟิลด์ที่จำเป็นสำหรับการไล่สาย Workflow (parentId, isWorkspace, defaultWorkflowId)
     const folders = await this.prisma.docFolder.findMany({
       where: { companyId },
       select: { id: true, name: true, description: true, parentId: true, isWorkspace: true, defaultWorkflowId: true }
@@ -1339,17 +1338,20 @@ async verifyFileIntegrity(companyId: number, fileId: number) {
       }
       
       const genAI = new GoogleGenerativeAI(apiKey);
-      // ใช้รุ่น pro เพื่อความแม่นยำสูงสุดตามที่กำหนด
       const model = genAI.getGenerativeModel({ model: "gemini-1.5-pro" }); 
       
+      // 🌟 นำคำใบ้ (Hint) ที่หน้าบ้านส่งมายัดใส่ Prompt แบบสั่งบังคับให้ AI ต้องให้ความสำคัญสูงสุด
+      const userHint = hint ? `\nคำแนะนำเพิ่มเติมจากผู้ใช้ (บังคับใช้เป็นเงื่อนไขหลักในการเลือก): "${hint}"` : '';
+
       const prompt = `
         คุณคือ AI จัดหมวดหมู่เอกสารขององค์กร
         ชื่อเอกสารที่ต้องการจัดหมวดหมู่: "${file.fileName}"
+        ${userHint}
         
         นี่คือรายชื่อโฟลเดอร์ทั้งหมด (ID: ชื่อโฟลเดอร์):
         ${folders.map(f => `- ${f.id}: ${f.name} (${f.description || 'ไม่มีรายละเอียด'})`).join('\n')}
         
-        กรุณาวิเคราะห์ชื่อเอกสารและเลือก ID ของโฟลเดอร์ที่เหมาะสมที่สุดเพียง 1 ตัวเลขเท่านั้น ห้ามพิมพ์ข้อความอื่นเด็ดขาด
+        กรุณาวิเคราะห์ชื่อเอกสารและคำแนะนำ แล้วเลือก ID ของโฟลเดอร์ที่เหมาะสมที่สุดเพียง 1 ตัวเลขเท่านั้น ห้ามพิมพ์ข้อความอื่นเด็ดขาด
         แต่ถ้าคุณพบว่ามีโฟลเดอร์ที่เหมาะสมมากกว่า 1 ตัวเลือก และไม่สามารถฟันธงได้ หรือไม่มีข้อมูลเพียงพอ ให้ตอบเลข 0 เท่านั้น
       `;
 
@@ -1358,7 +1360,6 @@ async verifyFileIntegrity(companyId: number, fileId: number) {
       
       const suggestedFolderId = parseInt(responseText, 10);
 
-      // 🛑 ดักจับกรณี AI ไม่มั่นใจ (ตอบ 0) หรือตอบมาไม่ใช่ตัวเลข
       if (suggestedFolderId === 0 || isNaN(suggestedFolderId)) {
         return { 
           message: 'AI ไม่สามารถฟันธงหมวดหมู่ได้เนื่องจากมีโฟลเดอร์ที่คล้ายกัน กรุณาเลือกโฟลเดอร์ด้วยตนเอง', 
@@ -1372,31 +1373,26 @@ async verifyFileIntegrity(companyId: number, fileId: number) {
         throw new BadRequestException('AI ไม่สามารถหาโฟลเดอร์ที่เหมาะสมได้ในขณะนี้');
       }
 
-      // ==========================================
       // 🔍 ลอจิกค้นหา Workflow (ไล่จากลูก -> แม่ -> ส่วนกลาง)
-      // ==========================================
       let currentFolder: any = validFolder;
       let effectiveWfId: number | null = null;
       let isWorkspaceContext = false;
 
-      // 1. วนลูปเช็กจากโฟลเดอร์ปลายทาง ไล่ขึ้นไปหาโฟลเดอร์แม่
       while (currentFolder) {
         if (currentFolder.isWorkspace) isWorkspaceContext = true;
         
         if (currentFolder.defaultWorkflowId) {
           effectiveWfId = currentFolder.defaultWorkflowId;
-          break; // เจอ Workflow แล้ว หยุดค้นหา
+          break; 
         }
         
-        // ขยับไปดูโฟลเดอร์แม่ในรอบถัดไป
         if (currentFolder.parentId) {
           currentFolder = folders.find(f => f.id === currentFolder.parentId);
         } else {
-          currentFolder = null; // ถึงระดับ Root แล้ว
+          currentFolder = null; 
         }
       }
 
-      // 2. ถ้าหาในสายโฟลเดอร์ไม่เจอเลย ให้ไปดูที่ WfModuleMapping (ส่วนกลาง)
       if (!effectiveWfId) {
         const mapping = await this.prisma.wfModuleMapping.findFirst({
           where: { companyId, moduleCode: 'DOC_MOVE', isActive: true }
@@ -1406,31 +1402,25 @@ async verifyFileIntegrity(companyId: number, fileId: number) {
         }
       }
 
-      // 3. 🚨 กฎเหล็ก: ถ้าเป็น Workspace แต่หา Workflow ไม่เจอเลยจากทุกที่ -> บล็อกทันที
       if (!effectiveWfId && isWorkspaceContext) {
         throw new BadRequestException(`ไม่สามารถให้ AI ย้ายไฟล์เข้าแฟ้ม "${validFolder.name}" ได้ เนื่องจากเป็น Workspace (คลังเอกสารองค์กร) ที่ยังไม่มีการกำหนดสายอนุมัติ (Workflow) กรุณาแจ้งผู้ดูแลระบบให้ตั้งค่าก่อน`);
       }
 
-      // ==========================================
       // 🔄 กระบวนการย้ายไฟล์และส่งเข้า Workflow
-      // ==========================================
-      
-      // อัปเดตโฟลเดอร์ปลายทาง
       await this.prisma.docFile.update({
         where: { id: fileId },
         data: { 
           folderId: validFolder.id,
-          wfRequestId: effectiveWfId ? -1 : null // ถ้ามี Workflow ล็อกเป็น -1 ก่อน, ถ้าไม่มี (แฟ้มทั่วไป) ให้ปลดเป็น null เลย
+          wfRequestId: effectiveWfId ? -1 : null 
         }
       });
 
-      // ถ้ามี Workflow ต้องส่งเรื่องเข้า WfRequestService
       if (effectiveWfId) {
         try {
           const wfResult: any = await this.wfRequestService.create(companyId, file.uploadedById, {
             moduleCode: 'DOC_MOVE', 
             businessId: file.id,
-            workflowId: effectiveWfId, // 🌟 ส่ง ID ที่หามาได้อย่างยากลำบากเข้าไปบังคับใช้เลย
+            workflowId: effectiveWfId, 
             topic: `[AI Auto-Classify] AI จัดเก็บเอกสารเข้าแฟ้ม: ${validFolder.name}`
           });
 
@@ -1441,7 +1431,6 @@ async verifyFileIntegrity(companyId: number, fileId: number) {
             });
           }
         } catch (wfError: any) {
-          // หาก Workflow Error ให้ Rollback ไฟล์กลับที่เดิม
           await this.prisma.docFile.update({
             where: { id: fileId },
             data: { folderId: file.folderId, wfRequestId: file.wfRequestId }
@@ -1640,28 +1629,38 @@ async verifyFileIntegrity(companyId: number, fileId: number) {
 
 
 // ==========================================
-  // ดึงรายการไฟล์ในโฟลเดอร์ (🌟 ซ่อน URL ถ้ารออนุมัติ หรือติดรหัสผ่าน + ส่งข้อมูล Badge)
+  // ดึงรายการไฟล์ในโฟลเดอร์ (🌟 เพิ่มระบบ Personal Staging กั้นไฟล์หน้า Root)
   // ==========================================
-  async getFilesByFolder(companyId: number, folderId?: number) {
+  async getFilesByFolder(companyId: number, folderId?: number, userId: number = 0, roleId: number = 0) {
     const files = await this.prisma.docFile.findMany({
       where: {
         companyId,
         folderId: folderId || null,
       },
       include: {
-        uploadedBy: { select: { id: true, username: true } },
+        uploadedBy: { select: { id: true, username: true, fullName: true } },
         accessRoles: true,
         versions: { orderBy: { version: 'desc' }, take: 1 },
         wfRequest: {
-          include: {
-            currentNode: true 
-          }
+          include: { currentNode: true }
         } 
       },
       orderBy: { createdAt: 'desc' },
     });
 
-    return files.map(file => {
+    // 🌟 [SECURITY LOGIC] กรองไฟล์ก่อนส่งไปหน้าบ้าน
+    const filteredFiles = files.filter(file => {
+      // กรณีที่ 1: ไฟล์ยังไม่ได้จัดเก็บ (อยู่หน้า Root)
+      if (!file.folderId) {
+        if (roleId === 1) return true; // Super Admin มองเห็นไฟล์ขยะทั้งหมด
+        if (file.uploadedById === userId) return true; // เจ้าของไฟล์มองเห็นไฟล์ตัวเอง
+        return false; // 🛑 คนอื่นห้ามเห็นไฟล์ที่ยังไม่จัดเก็บเด็ดขาด!
+      }
+      // กรณีที่ 2: ไฟล์อยู่ในโฟลเดอร์แล้ว ให้แสดงปกติ (เพราะโฟลเดอร์มี Access Guard คุมการคลิกดูอยู่แล้ว)
+      return true; 
+    });
+
+    return filteredFiles.map(file => {
       const isLockedByPassword = !!file.filePassword; 
       const isPendingApproval = file.wfRequest && ['PENDING', 'IN_PROGRESS'].includes(file.wfRequest.status);
       const shouldHideUrl = isLockedByPassword || isPendingApproval;
@@ -1672,10 +1671,8 @@ async verifyFileIntegrity(companyId: number, fileId: number) {
         isLocked: isLockedByPassword,
         isPendingApproval: isPendingApproval, 
         currentUrl: shouldHideUrl ? null : file.currentUrl, 
-        
         workflowStatus: file.wfRequest ? file.wfRequest.status : null,
         pendingStepName: isPendingApproval && file.wfRequest?.currentNode ? file.wfRequest.currentNode.nodeName : null,
-
         versions: file.versions.map(v => ({
            ...v,
            url: shouldHideUrl ? null : v.url
