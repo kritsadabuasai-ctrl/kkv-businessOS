@@ -892,6 +892,7 @@ async function main() {
       name: 'ระบบจัดการเอกสารภายใน', icon: 'LayoutDashboard', sortOrder: 14, isSystem: false,
       children: [
         { name: 'เอกสารภายใน', path: '/dashboard/dms', icon: 'Database', sortOrder: 0, mod: 'MOD_DOC' },
+        { name: 'เอกสารภายใน', path: '/dashboard/dms/access-management', icon: 'Users', sortOrder: 2, mod: 'MOD_DOC' },
                
       ]
     },
