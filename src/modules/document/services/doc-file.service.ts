@@ -1870,14 +1870,16 @@ async verifyFileIntegrity(companyId: number, fileId: number) {
         }
       }
 
-      // 🌟 [แก้ไข 2] ด่านตรวจ Draft Guard (ถ้าเป็นไฟล์ใหม่ซิงๆ และไม่มีสิทธิ์ จะถูกซ่อนออกจากหน้ารายการทันที)
+      // 🌟 [แก้ไข 2] ด่านตรวจ Draft Guard
       const canAccessDraft = await this.hasDraftAccess(file, userId, roleId, false);
       
       if (!canAccessDraft) {
-        // หาเวอร์ชันที่ใช้งานจริง (อนุมัติแล้ว)
+        // เช็กว่ามีเวอร์ชันปัจจุบัน หรือ สถานะ Workflow อนุมัติแล้ว
         const activeVersion = file.versions.find((v: any) => v.isCurrent === true);
-        if (!activeVersion) {
-          // 🛑 ถ้าย้อนดูแล้วไม่มีเวอร์ชันที่อนุมัติเลย (ไฟล์เพิ่งสร้าง V1) ให้ "ซ่อน" ไม่ให้เห็นในลิสต์เลย!
+        const isApproved = file.wfRequest && file.wfRequest.status === 'APPROVED';
+
+        // ถ้ายังไม่มีเวอร์ชันใช้งานจริง และยังไม่อนุมัติ ถึงจะซ่อนไฟล์
+        if (!activeVersion && !isApproved) {
           continue; 
         }
       }
