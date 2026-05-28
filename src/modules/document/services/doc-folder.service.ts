@@ -149,16 +149,37 @@ export class DocFolderService {
   }
 
 // ==========================================
-  // 📝 2. อัปเดตข้อมูลโฟลเดอร์ (แก้ไขชื่อ, ตั้งค่า Workspace, Workflow)
+  // 📝 2. อัปเดตข้อมูลโฟลเดอร์ (เพิ่มระบบเช็กสิทธิ์ก่อนแก้ไข)
   // ==========================================
-  async updateFolder(companyId: number, id: number, dto: UpdateFolderDto | any) {
+  async updateFolder(companyId: number, id: number, userId: number, roleId: number, dto: UpdateFolderDto | any) {
+    // 1. ตรวจสอบว่าโฟลเดอร์มีอยู่จริง
     const folder = await this.prisma.docFolder.findFirst({
       where: { id, companyId }
     });
     
     if (!folder) throw new NotFoundException('ไม่พบโฟลเดอร์ที่ต้องการแก้ไข');
 
-    // ตรวจสอบชื่อซ้ำ กรณีมีการเปลี่ยนชื่อหรือย้าย parent
+    // 🛡️ 2. เช็กสิทธิ์: ต้องเป็น Super Admin (roleId=1) หรือ มีสิทธิ์ canDelete ในโฟลเดอร์นี้
+    let canEdit = false;
+    if (roleId === 1) {
+      canEdit = true;
+    } else {
+      const access = await this.prisma.docFolderAccess.findFirst({
+        where: {
+          folderId: id,
+          companyId,
+          userId,
+          canDelete: true // ใช้สิทธิ์ลบเป็นเกณฑ์ตัดสิน "ผู้จัดการโฟลเดอร์"
+        }
+      });
+      if (access) canEdit = true;
+    }
+
+    if (!canEdit) {
+      throw new ForbiddenException('คุณไม่มีสิทธิ์แก้ไขโฟลเดอร์นี้');
+    }
+
+    // 3. ตรวจสอบชื่อซ้ำ กรณีมีการเปลี่ยนชื่อหรือย้าย parent
     if (dto.name || dto.parentId !== undefined) {
       const checkName = dto.name || folder.name;
       const checkParentId = dto.parentId !== undefined ? dto.parentId : folder.parentId;
@@ -168,13 +189,13 @@ export class DocFolderService {
           companyId,
           parentId: checkParentId,
           name: checkName,
-          id: { not: id } // ไม่นับตัวเอง
+          id: { not: id }
         }
       });
       if (existing) throw new BadRequestException('ชื่อโฟลเดอร์นี้มีอยู่แล้วในตำแหน่งเดียวกัน');
     }
 
-    // 🌟 [SaaS Logic] ถ้ามีการตั้งค่า deleteWorkflowId ใหม่ ต้องเช็คสิทธิ์ Enterprise
+    // 4. เช็กสิทธิ์ Enterprise ถ้ามีการเปลี่ยน Workflow
     if (dto.deleteWorkflowId && dto.deleteWorkflowId !== folder.deleteWorkflowId) {
       const hasEnterpriseFeature = await this.prisma.orgSubscription.findFirst({
         where: { 
@@ -188,6 +209,7 @@ export class DocFolderService {
       }
     }
 
+    // 5. บันทึกข้อมูล
     return this.prisma.docFolder.update({
       where: { id },
       data: {
@@ -197,7 +219,7 @@ export class DocFolderService {
         isWorkspace: dto.isWorkspace,
         defaultWorkflowId: dto.defaultWorkflowId,
         deleteWorkflowId: dto.deleteWorkflowId,
-        accessWorkflowId: dto.accessWorkflowId, // 🌟 [เพิ่มใหม่] อัปเดตสายอนุมัติการขอสิทธิ์เข้าถึง
+        accessWorkflowId: dto.accessWorkflowId,
       }
     });
   }
