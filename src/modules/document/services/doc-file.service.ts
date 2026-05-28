@@ -947,7 +947,7 @@ async verifyFileIntegrity(companyId: number, fileId: number) {
     }
   }
 
- // ==========================================
+// ==========================================
   // 🌟 [อัปเดต] ฟังก์ชันยิง Workflow ขอสิทธิ์เข้าถึง (รองรับทั้ง View และขอ RAW_FILE)
   // ==========================================
   async requestFileAccess(companyId: number, userId: number, dto: any) {
@@ -971,10 +971,8 @@ async verifyFileIntegrity(companyId: number, fileId: number) {
       throw new BadRequestException('คุณได้ส่งคำขอสิทธิ์สำหรับไฟล์นี้ไปแล้ว กรุณารอการอนุมัติ');
     }
 
-    // 1. ค้นหา Workflow จากระดับ Folder (ไล่จากลูกไปหาแม่) ก่อน
     let targetWorkflowId = await this.getInheritedWorkflow(file.folderId, companyId, 'ACCESS');
 
-    // 2. ถ้าในสายโฟลเดอร์ไม่มีการตั้งค่าไว้เลย ให้ไปดึงจากส่วนกลาง (Module Mapping)
     if (!targetWorkflowId) {
       const mapping = await this.prisma.wfModuleMapping.findFirst({
         where: { companyId, moduleCode: 'DATA_ACCESS', isActive: true }
@@ -982,7 +980,6 @@ async verifyFileIntegrity(companyId: number, fileId: number) {
       if (mapping) targetWorkflowId = mapping.workflowId;
     }
     
-    // 3. ถ้าหาจากทั้งสองที่แล้วยังไม่มี ให้ฟ้อง Error
     if (!targetWorkflowId) {
       throw new BadRequestException('ระบบยังไม่ได้ตั้งค่าสายอนุมัติสำหรับการขอเข้าถึงข้อมูล (DATA_ACCESS) กรุณาตั้งค่าที่แฟ้มข้อมูลหรือส่วนกลางก่อน');
     }
@@ -994,30 +991,34 @@ async verifyFileIntegrity(companyId: number, fileId: number) {
       topicPrefix = 'ขอสิทธิ์ดาวน์โหลดไฟล์ (มีลายน้ำ)';
     }
 
+    // 🌟 ดึงค่าตัวแปรออกมาก่อน
+    const reasonText = dto.reason || 'ขอสิทธิ์เข้าถึงเพื่อปฏิบัติงาน';
+    const durationText = dto.durationDays || 1;
+
     const accessReq = await this.prisma.docAccessRequest.create({
       data: {
         companyId,
         requesterId: userId,
         targetType: 'FILE',
         targetId: dto.targetId,
-        reason: dto.reason || 'ขอสิทธิ์เข้าถึงเพื่อปฏิบัติงาน',
-        durationDays: dto.durationDays || 1, 
+        reason: reasonText,
+        durationDays: durationText, 
         status: 'PENDING',
       }
     });
 
-    // 🌟 [แก้ไขจุดนี้] นำ reason และ durationDays ใส่เข้าไปในตัวแปร data ของ Workflow
     const request: any = await this.wfRequestService.create(companyId, userId, {
       moduleCode: 'DATA_ACCESS',
       workflowId: targetWorkflowId, 
       businessId: String(accessReq.id),
-      topic: `${topicPrefix}: ${file.fileName}`,
       
-      // 🌟 เพิ่ม Payload ตรงนี้ เพื่อให้ผู้อนุมัติเห็นรายละเอียด!
+      // 🌟 [แก้ตรงนี้ครับ] จับเหตุผลและจำนวนวัน ยัดใส่ Topic ให้มันโชว์ในหน้าบ้านทันที!
+      topic: `${topicPrefix}: ${file.fileName} | เหตุผล: ${reasonText} | ระยะเวลา: ${durationText} วัน`,
+      
       data: {
         accessType: accessType,
-        reason: dto.reason || 'ขอสิทธิ์เข้าถึงเพื่อปฏิบัติงาน',
-        durationDays: dto.durationDays || 1
+        reason: reasonText,
+        durationDays: durationText
       }
     } as any);
 
