@@ -6,6 +6,13 @@ export enum AccessTargetType {
   FILE = 'FILE',
 }
 
+// 🌟 [NEW] เพิ่ม Enum สำหรับประเภทระดับสิทธิ์การขอเข้าถึง
+export enum AccessType {
+  VIEW = 'VIEW',
+  DOWNLOAD = 'DOWNLOAD',
+  RAW_FILE = 'RAW_FILE'
+}
+
 export class CreateAccessRequestDto {
   @IsEnum(AccessTargetType)
   @IsNotEmpty()
@@ -14,6 +21,11 @@ export class CreateAccessRequestDto {
   @IsInt()
   @IsNotEmpty()
   targetId!: number; // ID ของโฟลเดอร์หรือไฟล์นั้นๆ
+
+  // 🌟 [NEW] เพิ่มฟิลด์ accessType เพื่อให้ Controller อนุญาตให้รับค่านี้ได้
+  @IsEnum(AccessType)
+  @IsOptional()
+  accessType?: AccessType; 
 
   @IsOptional()
   @IsString()
