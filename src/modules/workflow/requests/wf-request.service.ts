@@ -447,9 +447,23 @@ export class WfRequestService {
           const expireDate = new Date();
           expireDate.setDate(expireDate.getDate() + accessReq.durationDays);
 
+          // 🌟 1. อ่าน accessType ที่เราฝังไว้ใน data ตอนพนักงานส่งคำขอ
+          const reqData = typeof request.data === 'string' ? JSON.parse(request.data) : (request.data || {});
+          const accessType = reqData.accessType || 'VIEW'; // ค่า Default หากไม่มี
+          
+          // 🌟 2. กำหนดสิทธิ์การดาวน์โหลด (ให้เฉพาะคนที่ขอ DOWNLOAD หรือ RAW_FILE)
+          const isDownloadAllowed = ['DOWNLOAD', 'RAW_FILE'].includes(accessType);
+
           if (accessReq.targetType === 'FILE') {
             await this.prisma.docFileAccess.create({
-              data: { companyId: accessReq.companyId, fileId: accessReq.targetId, userId: accessReq.requesterId, canView: true, canDownload: true, expiresAt: expireDate }
+              data: { 
+                companyId: accessReq.companyId, 
+                fileId: accessReq.targetId, 
+                userId: accessReq.requesterId, 
+                canView: true,  // ทุกคำขออย่างน้อยต้องดูได้
+                canDownload: isDownloadAllowed, // 🛑 ล็อกสิทธิ์ดาวน์โหลดให้ตรงกับสิ่งที่ขอ!
+                expiresAt: expireDate 
+              }
             });
           } else if (accessReq.targetType === 'FOLDER') {
             await this.prisma.docFolderAccess.create({
