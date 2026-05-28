@@ -1321,7 +1321,7 @@ async verifyFileIntegrity(companyId: number, fileId: number) {
   }
 
 // ==========================================
-  // 🌟 [NEW] ฟังก์ชันสำหรับให้ AI คัดแยกไฟล์เข้าโฟลเดอร์ (รองรับ Hint + จัดการความกำกวม)
+  // 🌟 [NEW] ฟังก์ชันสำหรับให้ AI คัดแยกไฟล์เข้าโฟลเดอร์ (รองรับ Hint + จัดการความกำกวม + หักโควตา AI)
   // ==========================================
   async aiClassifyFileToFolder(companyId: number, fileId: number, hint?: string) {
     const file = await this.prisma.docFile.findFirst({
@@ -1346,7 +1346,8 @@ async verifyFileIntegrity(companyId: number, fileId: number) {
       }
       
       const genAI = new GoogleGenerativeAI(apiKey);
-      const model = genAI.getGenerativeModel({ model: "gemini-1.5-pro" }); 
+      const modelName = "gemini-1.5-pro"; // 🌟 เก็บชื่อ Model ไว้ใช้ตอนบันทึกโควตา
+      const model = genAI.getGenerativeModel({ model: modelName }); 
       
       // 🌟 นำคำใบ้ (Hint) ที่หน้าบ้านส่งมายัดใส่ Prompt แบบสั่งบังคับให้ AI ต้องให้ความสำคัญสูงสุด
       const userHint = hint ? `\nคำแนะนำเพิ่มเติมจากผู้ใช้ (บังคับใช้เป็นเงื่อนไขหลักในการเลือก): "${hint}"` : '';
@@ -1364,8 +1365,33 @@ async verifyFileIntegrity(companyId: number, fileId: number) {
       `;
 
       const result = await model.generateContent(prompt);
-      const responseText = result.response.text().trim();
+      const response = await result.response;
+      const responseText = response.text().trim();
       
+      // ==========================================
+      // 🪙 🌟 [NEW] ระบบตัดโควตา AI (AI Token Tracking)
+      // ==========================================
+      const usedPromptTokens = response.usageMetadata?.promptTokenCount || 0;
+      const usedCompletionTokens = response.usageMetadata?.candidatesTokenCount || 0;
+
+      if (usedPromptTokens > 0 || usedCompletionTokens > 0) {
+        try {
+          // สั่งหักโควตา AI ของบริษัทนี้
+          await this.aiQuotasService.recordUsage({
+            companyId,
+            aiBotId: 0, // ระบุเป็น 0 หรือ null ถ้านี่คือฟีเจอร์ System AI ไม่ใช่ Bot ของผู้ใช้สร้างเอง
+            modelName: modelName,
+            promptTokens: usedPromptTokens,
+            completionTokens: usedCompletionTokens,
+            source: 'DMS_AUTO_CLASSIFY' // 🌟 ระบุที่มาให้ชัดเจนเพื่อใช้ออกรายงาน
+          });
+        } catch (quotaError) {
+          console.error('❌ Failed to deduct tokens during AI Classification:', quotaError);
+          // ปล่อยผ่านไปได้ ไม่ต้อง throw error เพื่อให้ผู้ใช้ยังคงทำงานต่อได้แม้ระบบโควตาจะมีปัญหาชั่วคราว
+        }
+      }
+      // ==========================================
+
       const suggestedFolderId = parseInt(responseText, 10);
 
       if (suggestedFolderId === 0 || isNaN(suggestedFolderId)) {
