@@ -21,9 +21,9 @@ export class DocFolderService {
   ) {}
 
 // ==========================================
-  // 📁 1. สร้างโฟลเดอร์ใหม่ (รองรับ SaaS Gating)
+  // 📁 1. สร้างโฟลเดอร์ใหม่ (รองรับ SaaS Gating + Auto-Assign Owner)
   // ==========================================
-  async createFolder(companyId: number, dto: CreateFolderDto | any) {
+  async createFolder(companyId: number, userId: number, dto: CreateFolderDto | any) {
     
     // 🌟🌟 [SaaS Logic] ดักจับฟีเจอร์ Enterprise (สายอนุมัติการลบ)
     if (dto.deleteWorkflowId) {
@@ -50,16 +50,36 @@ export class DocFolderService {
 
     if (existing) throw new BadRequestException('ชื่อโฟลเดอร์นี้มีอยู่แล้วในตำแหน่งเดียวกัน');
 
-    return this.prisma.docFolder.create({
-      data: {
-        companyId: companyId,
-        name: dto.name,
-        description: dto.description,
-        parentId: dto.parentId,
-        isWorkspace: dto.isWorkspace || false,
-        defaultWorkflowId: dto.defaultWorkflowId || null,
-        deleteWorkflowId: dto.deleteWorkflowId || null, 
-      },
+    // 🌟 ใช้งาน Transaction เพื่อให้แน่ใจว่า โฟลเดอร์และสิทธิ์ จะถูกสร้างพร้อมกันเสมอ
+    return await this.prisma.$transaction(async (tx) => {
+      // 1. สร้างโฟลเดอร์
+      const newFolder = await tx.docFolder.create({
+        data: {
+          companyId: companyId,
+          name: dto.name,
+          description: dto.description,
+          parentId: dto.parentId,
+          isWorkspace: dto.isWorkspace || false,
+          defaultWorkflowId: dto.defaultWorkflowId || null,
+          deleteWorkflowId: dto.deleteWorkflowId || null, 
+        },
+      });
+
+      // 2. ให้สิทธิ์ "ผู้จัดการโฟลเดอร์ (canDelete)" แก่คนที่สร้างทันที
+      if (userId) {
+        await tx.docFolderAccess.create({
+          data: {
+            companyId: companyId,
+            folderId: newFolder.id,
+            userId: userId,
+            canView: true,
+            canUpload: true,
+            canDelete: true // ให้สิทธิ์สูงสุดเพื่อเป็นเจ้าของแฟ้ม
+          }
+        });
+      }
+
+      return newFolder;
     });
   }
 

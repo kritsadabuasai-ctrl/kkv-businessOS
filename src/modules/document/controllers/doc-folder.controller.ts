@@ -19,8 +19,11 @@ export class DocFolderController {
   @RequirePermissions('document:create') 
   @Post()
   create(@Body() dto: CreateFolderDto, @Req() req: any) {
-    // 🛡️ โยน companyId จาก Token ให้ Service จัดการตรงๆ
-    return this.folderService.createFolder(req.user.companyId, dto);
+    // 🌟 ดึง userId จาก Token 
+    const userId = req.user?.id || req.user?.userId;
+    
+    // 🌟 ส่ง userId เพิ่มเข้าไปใน Parameter ตัวที่ 2
+    return this.folderService.createFolder(req.user.companyId, userId, dto);
   }
 
   @ApiOperation({ summary: 'ดึงโครงสร้างแฟ้มข้อมูลทั้งหมด (Tree)' })
