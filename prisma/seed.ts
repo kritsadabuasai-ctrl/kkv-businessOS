@@ -23,6 +23,7 @@ async function main() {
     await prisma.docFileMetadata.deleteMany({});
     await prisma.docFileAccess.deleteMany({});
     await prisma.docFolderAccess.deleteMany({});
+    await prisma.docAccessRequest.deleteMany({});
     await prisma.docFileVersion.deleteMany({});
     await prisma.docFile.deleteMany({});
     await prisma.docFolder.deleteMany({});
