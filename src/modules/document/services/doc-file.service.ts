@@ -1313,7 +1313,7 @@ async verifyFileIntegrity(companyId: number, fileId: number) {
   }
 
 // ==========================================
-  // 🌟 [NEW] ฟังก์ชันสำหรับให้ AI คัดแยกไฟล์เข้าโฟลเดอร์ (ทำงานร่วมกับ Workflow)
+  // 🌟 [NEW] ฟังก์ชันสำหรับให้ AI คัดแยกไฟล์เข้าโฟลเดอร์ (ทำงานร่วมกับ Workflow แบบ Hierarchical)
   // ==========================================
   async aiClassifyFileToFolder(companyId: number, fileId: number) {
     const file = await this.prisma.docFile.findFirst({
@@ -1322,9 +1322,10 @@ async verifyFileIntegrity(companyId: number, fileId: number) {
     
     if (!file) throw new NotFoundException('ไม่พบเอกสารที่ต้องการคัดแยก');
 
+    // 🌟 ดึงข้อมูลฟิลด์ที่จำเป็นสำหรับการไล่สาย Workflow (parentId, isWorkspace, defaultWorkflowId)
     const folders = await this.prisma.docFolder.findMany({
       where: { companyId },
-      select: { id: true, name: true, description: true }
+      select: { id: true, name: true, description: true, parentId: true, isWorkspace: true, defaultWorkflowId: true }
     });
 
     if (folders.length === 0) {
@@ -1338,7 +1339,7 @@ async verifyFileIntegrity(companyId: number, fileId: number) {
       }
       
       const genAI = new GoogleGenerativeAI(apiKey);
-      // เปลี่ยนมาใช้รุ่น pro เพื่อความแม่นยำสูงสุดในการวิเคราะห์บริบท
+      // ใช้รุ่น pro เพื่อความแม่นยำสูงสุดตามที่กำหนด
       const model = genAI.getGenerativeModel({ model: "gemini-1.5-pro" }); 
       
       const prompt = `
@@ -1362,45 +1363,95 @@ async verifyFileIntegrity(companyId: number, fileId: number) {
       }
 
       // ==========================================
-      // 🔄 กระบวนการย้ายไฟล์และสร้าง Workflow
+      // 🔍 ลอจิกค้นหา Workflow (ไล่จากลูก -> แม่ -> ส่วนกลาง)
+      // ==========================================
+      let currentFolder: any = validFolder;
+      let effectiveWfId: number | null = null;
+      let isWorkspaceContext = false;
+
+      // 1. วนลูปเช็กจากโฟลเดอร์ปลายทาง ไล่ขึ้นไปหาโฟลเดอร์แม่
+      while (currentFolder) {
+        if (currentFolder.isWorkspace) isWorkspaceContext = true;
+        
+        if (currentFolder.defaultWorkflowId) {
+          effectiveWfId = currentFolder.defaultWorkflowId;
+          break; // เจอ Workflow แล้ว หยุดค้นหา
+        }
+        
+        // ขยับไปดูโฟลเดอร์แม่ในรอบถัดไป
+        if (currentFolder.parentId) {
+          currentFolder = folders.find(f => f.id === currentFolder.parentId);
+        } else {
+          currentFolder = null; // ถึงระดับ Root แล้ว
+        }
+      }
+
+      // 2. ถ้าหาในสายโฟลเดอร์ไม่เจอเลย ให้ไปดูที่ WfModuleMapping (ส่วนกลาง)
+      if (!effectiveWfId) {
+        const mapping = await this.prisma.wfModuleMapping.findFirst({
+          where: { companyId, moduleCode: 'DOC_MOVE', isActive: true }
+        });
+        if (mapping?.workflowId) {
+          effectiveWfId = mapping.workflowId;
+        }
+      }
+
+      // 3. 🚨 กฎเหล็ก: ถ้าเป็น Workspace แต่หา Workflow ไม่เจอเลยจากทุกที่ -> บล็อกทันที
+      if (!effectiveWfId && isWorkspaceContext) {
+        throw new BadRequestException(`ไม่สามารถให้ AI ย้ายไฟล์เข้าแฟ้ม "${validFolder.name}" ได้ เนื่องจากเป็น Workspace (คลังเอกสารองค์กร) ที่ยังไม่มีการกำหนดสายอนุมัติ (Workflow) กรุณาแจ้งผู้ดูแลระบบให้ตั้งค่าก่อน`);
+      }
+
+      // ==========================================
+      // 🔄 กระบวนการย้ายไฟล์และส่งเข้า Workflow
       // ==========================================
       
-      // 1. อัปเดตโฟลเดอร์ปลายทางให้ไฟล์ก่อน พร้อมล็อก wfRequestId ชั่วคราว (-1) เพื่อป้องกันคนเปิดดู
+      // อัปเดตโฟลเดอร์ปลายทาง
       await this.prisma.docFile.update({
         where: { id: fileId },
         data: { 
           folderId: validFolder.id,
-          wfRequestId: -1 
+          wfRequestId: effectiveWfId ? -1 : null // ถ้ามี Workflow ล็อกเป็น -1 ก่อน, ถ้าไม่มี (แฟ้มทั่วไป) ให้ปลดเป็น null เลย
         }
       });
 
-     try {
-        // 🌟 เติม : any ตรงนี้ เพื่อบอก TypeScript ว่าผลลัพธ์อาจจะเป็น Object หรือ Message ก็ได้
-        const wfResult: any = await this.wfRequestService.create(companyId, file.uploadedById, {
-          moduleCode: 'DOC_MOVE', 
-          businessId: file.id,
-          topic: `[AI Auto-Classify] AI จัดเก็บเอกสารเข้าแฟ้ม: ${validFolder.name}`
-        });
+      // ถ้ามี Workflow ต้องส่งเรื่องเข้า WfRequestService
+      if (effectiveWfId) {
+        try {
+          const wfResult: any = await this.wfRequestService.create(companyId, file.uploadedById, {
+            moduleCode: 'DOC_MOVE', 
+            businessId: file.id,
+            workflowId: effectiveWfId, // 🌟 ส่ง ID ที่หามาได้อย่างยากลำบากเข้าไปบังคับใช้เลย
+            topic: `[AI Auto-Classify] AI จัดเก็บเอกสารเข้าแฟ้ม: ${validFolder.name}`
+          });
 
-        // 3. อัปเดต ID ของ Workflow จริงๆ กลับไปที่ไฟล์ (ถ้ามี id ส่งกลับมา)
-        if (wfResult && wfResult.id) {
+          if (wfResult && wfResult.id) {
+            await this.prisma.docFile.update({
+              where: { id: fileId },
+              data: { wfRequestId: wfResult.id }
+            });
+          }
+        } catch (wfError: any) {
+          // หาก Workflow Error ให้ Rollback ไฟล์กลับที่เดิม
           await this.prisma.docFile.update({
             where: { id: fileId },
-            data: { wfRequestId: wfResult.id }
+            data: { folderId: file.folderId, wfRequestId: file.wfRequestId }
           });
+          throw new InternalServerErrorException(`AI คัดแยกเอกสารสำเร็จ แต่ไม่สามารถส่งเข้าสายอนุมัติได้: ${wfError.message}`);
         }
-      } catch (wfError: any) {
-        // กรณีที่โฟลเดอร์ปลายทางไม่มี Workflow ควบคุม
-        console.log(`[AI Classification] ข้ามขั้นตอน Workflow สำหรับโฟลเดอร์ ${validFolder.name}`);
       }
 
       return { 
-        message: 'AI คัดแยกเอกสารและส่งเข้าสายอนุมัติสำเร็จ', 
+        message: effectiveWfId 
+          ? 'AI คัดแยกเอกสารและส่งเข้าสายอนุมัติเรียบร้อยแล้ว' 
+          : 'AI คัดแยกเอกสารและย้ายไฟล์สำเร็จ (ไม่มีเงื่อนไขสายอนุมัติ)', 
         movedToFolder: validFolder.name
       };
 
-    } catch (error : any) {
+    } catch (error: any) {
       console.error("AI Classification Error:", error);
+      if (error instanceof BadRequestException || error instanceof InternalServerErrorException) {
+        throw error;
+      }
       throw new InternalServerErrorException('เกิดข้อผิดพลาดในการเชื่อมต่อกับระบบ AI คัดแยกเอกสาร');
     }
   }
