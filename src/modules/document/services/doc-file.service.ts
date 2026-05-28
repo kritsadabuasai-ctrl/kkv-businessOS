@@ -1313,7 +1313,7 @@ async verifyFileIntegrity(companyId: number, fileId: number) {
   }
 
 // ==========================================
-  // 🌟 [NEW] ฟังก์ชันสำหรับให้ AI คัดแยกไฟล์เข้าโฟลเดอร์ (ทำงานร่วมกับ Workflow แบบ Hierarchical)
+  // 🌟 [NEW] ฟังก์ชันสำหรับให้ AI คัดแยกไฟล์เข้าโฟลเดอร์ (ทำงานร่วมกับ Workflow แบบ Hierarchical + จัดการความกำกวม)
   // ==========================================
   async aiClassifyFileToFolder(companyId: number, fileId: number) {
     const file = await this.prisma.docFile.findFirst({
@@ -1350,12 +1350,22 @@ async verifyFileIntegrity(companyId: number, fileId: number) {
         ${folders.map(f => `- ${f.id}: ${f.name} (${f.description || 'ไม่มีรายละเอียด'})`).join('\n')}
         
         กรุณาวิเคราะห์ชื่อเอกสารและเลือก ID ของโฟลเดอร์ที่เหมาะสมที่สุดเพียง 1 ตัวเลขเท่านั้น ห้ามพิมพ์ข้อความอื่นเด็ดขาด
+        แต่ถ้าคุณพบว่ามีโฟลเดอร์ที่เหมาะสมมากกว่า 1 ตัวเลือก และไม่สามารถฟันธงได้ หรือไม่มีข้อมูลเพียงพอ ให้ตอบเลข 0 เท่านั้น
       `;
 
       const result = await model.generateContent(prompt);
       const responseText = result.response.text().trim();
       
       const suggestedFolderId = parseInt(responseText, 10);
+
+      // 🛑 ดักจับกรณี AI ไม่มั่นใจ (ตอบ 0) หรือตอบมาไม่ใช่ตัวเลข
+      if (suggestedFolderId === 0 || isNaN(suggestedFolderId)) {
+        return { 
+          message: 'AI ไม่สามารถฟันธงหมวดหมู่ได้เนื่องจากมีโฟลเดอร์ที่คล้ายกัน กรุณาเลือกโฟลเดอร์ด้วยตนเอง', 
+          status: 'MANUAL_REQUIRED'
+        };
+      }
+
       const validFolder = folders.find(f => f.id === suggestedFolderId);
 
       if (!validFolder) {
@@ -1444,6 +1454,7 @@ async verifyFileIntegrity(companyId: number, fileId: number) {
         message: effectiveWfId 
           ? 'AI คัดแยกเอกสารและส่งเข้าสายอนุมัติเรียบร้อยแล้ว' 
           : 'AI คัดแยกเอกสารและย้ายไฟล์สำเร็จ (ไม่มีเงื่อนไขสายอนุมัติ)', 
+        status: 'SUCCESS',
         movedToFolder: validFolder.name
       };
 
