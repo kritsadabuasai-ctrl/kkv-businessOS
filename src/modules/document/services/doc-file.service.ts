@@ -1024,8 +1024,9 @@ async verifyFileIntegrity(companyId: number, fileId: number) {
     };
   }
 
- // ==========================================
-  // 💎 [ฟังก์ชันเต็ม] ดาวน์โหลดเอกสารต้นฉบับแบบไม่มีลายน้ำ (Strict SharePoint + Workflow Guard + Tamper-Proof)
+
+  // ==========================================
+  // 💎 [ฟังก์ชันเต็ม] ดาวน์โหลดเอกสารต้นฉบับแบบไม่มีลายน้ำ (Strict Folder Guard + Workflow Access + Tamper-Proof)
   // ==========================================
   async downloadOriginalFile(companyId: number, fileId: number, userId: number, roleId: number, isHQ: boolean = false) {
     const file = await this.prisma.docFile.findFirst({
@@ -1041,20 +1042,55 @@ async verifyFileIntegrity(companyId: number, fileId: number) {
 
     let hasAccess = false;
 
+    // --- 🛡️ ด่านที่ 1: ตรวจสอบสิทธิ์ระดับผู้จัดการแฟ้ม (Strict Folder Guard) ---
     if (roleId === 1) {
       hasAccess = true; 
-    } else if (file.folder?.isWorkspace) {
+    } else if (file.folderId) {
+      // 🚨 บังคับเช็กสิทธิ์ canDelete จากโฟลเดอร์แม่เท่านั้น (ตัดสิทธิ์คนอัปโหลด)
       hasAccess = await this.hasFolderAccess(file.folderId, userId, roleId, 'canDelete');
-    } else {
-      if (file.uploadedById === userId) {
-        hasAccess = true;
+    } else if (!file.folderId && file.uploadedById === userId) {
+      // 🌟 ข้อยกเว้น: ไฟล์ที่ยังลอยอยู่หน้า Root (ยังไม่จัดเก็บ) ยอมให้คนอัปโหลดโหลดไฟล์ตัวเองได้
+      hasAccess = true;
+    }
+
+    // --- 🛡️ ด่านที่ 2: ตรวจสอบสิทธิ์จากการขออนุมัติผ่านระบบ (Workflow Access Request) ---
+    // สำหรับ Staff ทั่วไปที่ไม่มีสิทธิ์ canDelete แต่ได้รับอนุมัติให้โหลดไฟล์ต้นฉบับได้ชั่วคราว
+    if (!hasAccess) {
+      const approvedRequest = await this.prisma.docAccessRequest.findFirst({
+        where: {
+          companyId,
+          requesterId: userId,
+          targetType: 'FILE',
+          targetId: fileId,
+          status: 'APPROVED'
+        },
+        include: { wfRequest: true },
+        orderBy: { updatedAt: 'desc' } // เอาคำขอล่าสุดที่ได้รับการอนุมัติ
+      });
+
+      if (approvedRequest) {
+        // 🔍 เช็กว่าเป็นคำขอแบบ "ต้นฉบับ" หรือไม่ (ตรวจสอบจาก Topic ของ Workflow หรือถ้าในอนาคตมีฟิลด์ accessType ก็ดักได้เลย)
+        const isRawRequest = approvedRequest.wfRequest?.topic?.includes('ต้นฉบับ') || 
+                     (approvedRequest as any).accessType === 'RAW_FILE';
+
+        if (isRawRequest) {
+          // ⏱️ คำนวณเวลาหมดอายุสิทธิ์ (นับจากวันที่อนุมัติ updatedAt + durationDays)
+          const expireDate = new Date(approvedRequest.updatedAt);
+          expireDate.setDate(expireDate.getDate() + (approvedRequest.durationDays || 1));
+
+          if (new Date() <= expireDate) {
+            hasAccess = true; // ✅ อนุมัติให้โหลดได้เพราะ Workflow ผ่านและยังไม่หมดเวลา
+          }
+        }
       }
     }
 
+    // 🚨 ถ้าไม่ผ่านทั้งผู้จัดการแฟ้ม และไม่มีสิทธิ์จาก Workflow ให้เตะออกทันที
     if (!hasAccess) {
-      throw new ForbiddenException('สงวนสิทธิ์การดาวน์โหลดไฟล์ต้นฉบับเฉพาะเจ้าของไฟล์ หรือผู้ดูแล Workspace (Manager) เท่านั้น');
+      throw new ForbiddenException('สงวนสิทธิ์การดาวน์โหลดไฟล์ต้นฉบับเฉพาะผู้จัดการแฟ้ม หรือผู้ที่ได้รับอนุมัติผ่านระบบขอสิทธิ์ (Workflow) เท่านั้น');
     }
 
+    // --- 🛡️ ด่านที่ 3: เช็กสิทธิ์เข้าถึงไฟล์ร่าง/รออนุมัติ (Workflow Context Guard) ---
     const canAccessDraft = await this.hasDraftAccess(file, userId, roleId, isHQ);
     let targetUrl = file.currentUrl;
 
@@ -1069,13 +1105,14 @@ async verifyFileIntegrity(companyId: number, fileId: number) {
     }
 
     try {
+      // 📥 ดึงไฟล์จาก Storage จริง
       const response = await axios.get(targetUrl, { responseType: 'arraybuffer' });
       const originalBuffer = Buffer.from(response.data);
 
       // 🛡️ [TAMPER-PROOF] คำนวณ SHA-256 Hash ของไฟล์ต้นฉบับ
       const fileHash = crypto.createHash('sha256').update(originalBuffer).digest('hex');
 
-      // 📝 บันทึกประวัติว่าใครโหลดไฟล์ "ต้นฉบับ" (Hash นี้) ออกไป
+      // 📝 บันทึกประวัติว่าใครโหลดไฟล์ "ต้นฉบับ" (Hash นี้) ออกไป เพื่อใช้ในระบบ Audit Log
       await this.prisma.logDocumentTrace.create({
         data: {
           companyId,
@@ -1227,10 +1264,11 @@ async verifyFileIntegrity(companyId: number, fileId: number) {
   }
 
 
- // ==========================================
-  // 🚚 ฟังก์ชันย้ายไฟล์ (SharePoint Guard + Trigger Workflow ปลายทาง)
+// ==========================================
+  // 🚚 ฟังก์ชันย้ายไฟล์ (Strict Folder Guard + Trigger Workflow ปลายทาง)
   // ==========================================
   async moveFile(companyId: number, fileId: number, userId: number, roleId: number, newFolderId: number | null) {
+    // 1. ดึงข้อมูลเอกสารและโฟลเดอร์ต้นทาง
     const file = await this.prisma.docFile.findFirst({
       where: { id: fileId, companyId },
       include: { wfRequest: true, folder: true }
@@ -1246,19 +1284,24 @@ async verifyFileIntegrity(companyId: number, fileId: number) {
       return { message: 'ไฟล์อยู่ในโฟลเดอร์นี้อยู่แล้ว' };
     }
 
+    // --- 🛡️ ด่านที่ 1: เช็กสิทธิ์ดึงไฟล์ออกจาก "โฟลเดอร์ต้นทาง" (Source Guard) ---
     let hasSourceAccess = false;
+    
     if (roleId === 1) {
+      hasSourceAccess = true; // Super Admin ทำได้เสมอ
+    } else if (file.folderId) {
+      // 🚨 ไฟล์ที่จัดเก็บแล้ว: บังคับเช็กสิทธิ์ canDelete จากโฟลเดอร์ต้นทางเท่านั้น (ตัดสิทธิ์คนอัปโหลด)
+      hasSourceAccess = await this.hasFolderAccess(file.folderId, userId, roleId, 'canDelete');
+    } else if (!file.folderId && file.uploadedById === userId) {
+      // 🌟 ไฟล์ที่ลอยอยู่หน้า Root: อนุญาตให้คนอัปโหลดจัดการไฟล์ตัวเองเพื่อย้ายเข้าแฟ้มได้
       hasSourceAccess = true;
-    } else if (file.folder?.isWorkspace) {
-      const access = await this.prisma.docFolderAccess.findFirst({
-        where: { folderId: file.folderId as number, userId: userId }
-      });
-      if (access && access.canDelete) hasSourceAccess = true;
-    } else {
-      if (file.uploadedById === userId) hasSourceAccess = true;
     }
-    if (!hasSourceAccess) throw new ForbiddenException('คุณไม่มีสิทธิ์ดึงไฟล์ออกจากโฟลเดอร์ต้นทาง');
 
+    if (!hasSourceAccess) {
+      throw new ForbiddenException('คุณไม่มีสิทธิ์ดึงไฟล์ออกจากโฟลเดอร์ต้นทาง (ต้องมีสิทธิ์จัดการแฟ้มระดับ canDelete)');
+    }
+
+    // --- 🛡️ ด่านที่ 2: เช็กสิทธิ์เอาไฟล์ไปวางใน "โฟลเดอร์ปลายทาง" (Target Guard) ---
     if (newFolderId) {
       const targetFolder = await this.prisma.docFolder.findFirst({
         where: { id: newFolderId, companyId }
@@ -1268,25 +1311,25 @@ async verifyFileIntegrity(companyId: number, fileId: number) {
       let hasTargetAccess = false;
       if (roleId === 1) {
         hasTargetAccess = true;
-      } else if (targetFolder.isWorkspace) {
-        const access = await this.prisma.docFolderAccess.findFirst({
-          where: { folderId: newFolderId, userId: userId }
-        });
-        if (access && (access.canUpload || access.canDelete)) hasTargetAccess = true;
       } else {
-        const access = await this.prisma.docFolderAccess.findFirst({
-          where: { folderId: newFolderId, userId: userId }
-        });
-        if (access) hasTargetAccess = true;
+        // 🚨 บังคับเช็กว่ามีสิทธิ์ canUpload ในโฟลเดอร์ปลายทางหรือไม่
+        hasTargetAccess = await this.hasFolderAccess(newFolderId, userId, roleId, 'canUpload');
       }
       
-      if (!hasTargetAccess) throw new ForbiddenException('คุณไม่มีสิทธิ์นำไฟล์ไปวางในโฟลเดอร์ปลายทาง');
+      if (!hasTargetAccess) {
+        throw new ForbiddenException('คุณไม่มีสิทธิ์นำไฟล์ไปวางในโฟลเดอร์ปลายทาง (ต้องมีสิทธิ์อัปโหลดเอกสารเข้าแฟ้มนี้)');
+      }
     }
+
+    // 🔄 3. อัปเดตตำแหน่งย้ายจริงลงฐานข้อมูล
     await this.prisma.docFile.update({
       where: { id: fileId },
       data: { folderId: newFolderId }
     });
 
+    // =========================================================
+    // 🚦 4. ระบบตรวจสอบสายอนุมัติของแฟ้มปลายทาง (Workflow Trigger)
+    // =========================================================
     let targetWorkflowId = await this.getInheritedWorkflow(newFolderId, companyId, 'UPLOAD');
 
     if (!targetWorkflowId) {
@@ -1296,6 +1339,7 @@ async verifyFileIntegrity(companyId: number, fileId: number) {
       if (mapping) targetWorkflowId = mapping.workflowId;
     }
 
+    // ถ้าย้ายไปแฟ้มที่มีสายอนุมัติ ให้เตะเข้า Workflow อัตโนมัติ
     if (targetWorkflowId) {
       console.log(`[Move File] โฟลเดอร์ปลายทางมี Workflow ID ${targetWorkflowId} กำลังส่งเรื่องอัตโนมัติ...`);
 
@@ -1317,7 +1361,7 @@ async verifyFileIntegrity(companyId: number, fileId: number) {
       };
     }
 
-    return { message: 'ย้ายไฟล์สำเร็จ (โฟลเดอร์ปลายทางไม่มีสายอนุมัติ)', isPendingApproval: false };
+    return { message: 'ย้ายไฟล์สำเร็จ (โฟลเดอร์ปลายทางไม่มีเงื่อนไขสายอนุมัติบังคับ)', isPendingApproval: false };
   }
 
 // ==========================================
@@ -1756,41 +1800,32 @@ async verifyFileIntegrity(companyId: number, fileId: number) {
   }
 
  // ==========================================
-  // 🌟 [แก้ไข] อัปเดตสิทธิ์ไฟล์ (รับ Rules ที่มีทั้ง Role และ User + Access Guard)
+  // 🌟 [แก้ไข] อัปเดตสิทธิ์ไฟล์ (ตัดสิทธิ์คนอัปโหลด บังคับใช้สิทธิ์ canDelete)
   // ==========================================
   async updateFileAccess(companyId: number, fileId: number, userId: number, roleId: number, dto: any) { 
     const file = await this.prisma.docFile.findFirst({
-      where: { id: fileId, companyId: companyId },
-      include: { folder: true } // ดึง Folder มาเช็กด้วย
+      where: { id: fileId, companyId: companyId }
     });
 
-    if (!file) throw new NotFoundException('ไม่พบไฟล์ที่ระบุ หรือคุณไม่มีสิทธิ์');
+    if (!file) throw new NotFoundException('ไม่พบไฟล์ที่ระบุ');
 
-    // 🛡️ 1. ตรวจสอบสิทธิ์การเป็น "ผู้จัดการไฟล์"
+    // 🛡️ 1. ตรวจสอบสิทธิ์การเป็น "ผู้จัดการ" (บังคับใช้ canDelete)
     let canManageAccess = false;
 
-    // กฎข้อ 1: Super Admin ทำได้เสมอ
     if (roleId === 1) {
-      canManageAccess = true;
-    }
-    // กฎข้อ 2: ถ้าไฟล์นี้มีโฟลเดอร์แม่ ให้เช็กสิทธิ์ canDelete ในโฟลเดอร์แม่
-    else if (file.folderId) {
-       canManageAccess = await this.hasFolderAccess(file.folderId, userId, roleId, 'canDelete');
-    }
-    // กฎข้อ 3: ถ้าเป็นไฟล์ลอยๆ (ไม่มีโฟลเดอร์) อนุญาตให้เฉพาะคนสร้างไฟล์แก้สิทธิ์ได้
-    else {
-      if (file.uploadedById === userId) {
-        canManageAccess = true;
-      }
+      canManageAccess = true; // Super Admin ทำได้เสมอ
+    } else if (file.folderId) {
+      // 🚨 เช็กสิทธิ์ canDelete จากโฟลเดอร์แม่เท่านั้น (ตัดสิทธิ์คนอัปโหลดทิ้ง)
+      canManageAccess = await this.hasFolderAccess(file.folderId, userId, roleId, 'canDelete');
     }
 
-    // 🚨 ถ้าไม่ผ่านด่านใดๆ เลย -> เตะออกทันที
+    // 🚨 ถ้าไม่ผ่านด่าน -> เตะออกทันที
     if (!canManageAccess) {
-      throw new ForbiddenException('ไม่อนุญาตให้แก้ไขสิทธิ์ (สงวนสิทธิ์เฉพาะเจ้าของไฟล์ หรือผู้จัดการโฟลเดอร์เท่านั้น)');
+      throw new ForbiddenException('ไม่อนุญาตให้แก้ไขสิทธิ์ (สงวนสิทธิ์เฉพาะผู้จัดการแฟ้มที่มีสิทธิ์ลบ หรือผู้ดูแลระบบเท่านั้น)');
     }
 
     // ==========================================
-    // ✅ 2. ถ้าผ่านด่านมาได้ ให้เคลียร์สิทธิ์เดิมและบันทึกสิทธิ์ใหม่
+    // ✅ 2. เคลียร์สิทธิ์เดิมและบันทึกสิทธิ์ใหม่
     // ==========================================
     await this.prisma.docFileAccess.deleteMany({ where: { fileId } });
 
@@ -1810,10 +1845,12 @@ async verifyFileIntegrity(companyId: number, fileId: number) {
     return { message: 'อัปเดตสิทธิ์การเข้าถึงเอกสารเรียบร้อยแล้ว' };
   }
 
-// ==========================================
-  // 🗑️ 4. ลบไฟล์ (Strict Workspace Workflow Guard + Flexible Personal Mode แบบสืบทอดทั้งสาย)
+
+  // ==========================================
+  // 🗑️ 4. ลบไฟล์ (Strict Folder Guard + Workflow Trigger + AI/Storage Cleanup)
   // ==========================================
   async deleteFile(fileId: number, companyId: number, userId: number = 0, roleId: number = 0) {
+    // 1. ดึงข้อมูลไฟล์เป้าหมาย
     const file = await this.prisma.docFile.findFirst({
       where: { id: fileId, companyId },
       include: { 
@@ -1824,30 +1861,31 @@ async verifyFileIntegrity(companyId: number, fileId: number) {
     });
 
     if (!file) throw new NotFoundException('ไม่พบเอกสาร');
+    
+    // 🛡️ 2. ตรวจสอบสิทธิ์การลบ (Strict Folder-Centric Security)
     const isWorkspaceTree = await this.checkIsWorkspaceTree(file.folderId);
-
     let hasAccess = false;
     
-    if (userId === 0) { 
-      hasAccess = true;
-    } else if (isWorkspaceTree) {
+    if (userId === 0 || roleId === 1) { 
+      hasAccess = true; // System Auto-Delete หรือ Super Admin
+    } else if (file.folderId) {
+      // 🚨 ไฟล์ที่อยู่ในแฟ้มแล้ว บังคับเช็กสิทธิ์ canDelete จากโฟลเดอร์แม่เท่านั้น (ตัดสิทธิ์คนอัปโหลดทิ้ง)
       hasAccess = await this.hasFolderAccess(file.folderId, userId, roleId, 'canDelete');
-    } else {
-      if (file.uploadedById === userId) {
-        hasAccess = true;
-      } else if (file.folderId) {
-        hasAccess = await this.hasFolderAccess(file.folderId, userId, roleId, 'canDelete');
-      }
+    } else if (!file.folderId && file.uploadedById === userId) {
+      // 🌟 ไฟล์ลอยอยู่หน้า Root (ยังไม่จัดเก็บ) อนุญาตให้คนอัปโหลดลบไฟล์ขยะของตัวเองทิ้งได้
+      hasAccess = true;
     }
 
     if (!hasAccess) {
-      throw new ForbiddenException('คุณไม่มีสิทธิ์ลบเอกสารนี้ (สิทธิ์ใน Workspace ถูกระงับ หรือไม่มีสิทธิ์ลบในโฟลเดอร์นี้)');
+      throw new ForbiddenException('คุณไม่มีสิทธิ์ลบเอกสารนี้ (สงวนสิทธิ์เฉพาะผู้จัดการแฟ้มที่มีสิทธิ์ลบ หรือผู้ดูแลระบบเท่านั้น)');
     }
 
+    // 🛑 3. ตรวจสอบสถานะสายอนุมัติที่ค้างอยู่ (ถ้ามีคนกำลังขออนุมัติเอกสารนี้อยู่ ห้ามลบ)
     if (userId !== 0 && file.wfRequest && ['PENDING', 'IN_PROGRESS'].includes(file.wfRequest.status)) {
       throw new BadRequestException('ไม่สามารถลบได้เนื่องจากเอกสารนี้กำลังอยู่ในกระบวนการอนุมัติอื่นอยู่');
     }
 
+    // 🕒 4. กรณีระบบ Auto-Delete ลบไฟล์ที่หมดอายุ ให้เคลียร์ Workflow ที่ค้างอยู่ให้ด้วย
     if (userId === 0 && file.wfRequest && ['PENDING', 'IN_PROGRESS'].includes(file.wfRequest.status)) {
       console.log(`[Retention Policy] เอกสาร ID ${fileId} หมดอายุ ขอยกเลิก Workflow คำร้อง ID ${file.wfRequestId} ที่ค้างอยู่`);
       
@@ -1860,13 +1898,15 @@ async verifyFileIntegrity(companyId: number, fileId: number) {
         where: { requestId: file.wfRequest.id, action: 'PENDING' },
         data: { 
           action: 'CANCELLED', 
-          comment: 'System Auto-Delete: เอกสูกลบอัตโนมัติตามกำหนดเวลา คำร้องนี้จึงถูกยกเลิกโดยระบบ' 
+          comment: 'System Auto-Delete: เอกสารลบอัตโนมัติตามกำหนดเวลา คำร้องนี้จึงถูกยกเลิกโดยระบบ' 
         }
       });
     }
 
+    // 🚦 5. ตรวจสอบสายอนุมัติสำหรับการทำลายเอกสาร (DOC_DELETE)
     let targetDeleteWorkflowId = await this.getInheritedWorkflow(file.folderId, companyId, 'DELETE');
 
+    // ถ้าไม่มีสายเฉพาะที่โฟลเดอร์ ให้ดึงจากส่วนกลาง
     if (!targetDeleteWorkflowId) {
       const mapping = await this.prisma.wfModuleMapping.findFirst({
         where: { companyId: companyId, moduleCode: 'DOC_DELETE', isActive: true }
@@ -1874,12 +1914,14 @@ async verifyFileIntegrity(companyId: number, fileId: number) {
       if (mapping) targetDeleteWorkflowId = mapping.workflowId;
     }
 
+    // ถ้าเป็นคลังองค์กร (Workspace) ต้องบังคับให้มีสายทำลายเอกสารเสมอ (ห้ามปล่อยผ่าน)
     if (isWorkspaceTree) {
       if (!targetDeleteWorkflowId && userId !== 0) {
         throw new BadRequestException('เอกสารนี้อยู่ภายใต้ Workspace (คลังเอกสารกลาง) จำเป็นต้องได้รับการอนุมัติก่อนทำลาย กรุณาตั้งค่า "สายอนุมัติการทำลายเอกสาร (DOC_DELETE)" ที่โฟลเดอร์หรือตั้งค่าส่วนกลางก่อนดำเนินการ');
       }
     }
 
+    // ส่งคำขอเข้าสายอนุมัติ DOC_DELETE (ระบบยังไม่ลบไฟล์จริง)
     if (targetDeleteWorkflowId && userId !== 0) {
       const request: any = await this.wfRequestService.create(companyId, userId, {
         moduleCode: 'DOC_DELETE',
@@ -1899,6 +1941,11 @@ async verifyFileIntegrity(companyId: number, fileId: number) {
       };
     }
 
+    // ==========================================
+    // 🧹 ขั้นตอนการ Hard Delete (ทำลายไฟล์จริง)
+    // ==========================================
+    
+    // 6. คืนพื้นที่ Storage โควตาให้บริษัท (ทุกเวอร์ชัน)
     try {
       for (const ver of file.versions) {
         await this.storageService.restoreQuota(companyId, ver.url);
@@ -1907,6 +1954,7 @@ async verifyFileIntegrity(companyId: number, fileId: number) {
       throw new InternalServerErrorException('เกิดข้อผิดพลาดในการคืนพื้นที่จัดเก็บไฟล์ (Storage Service Error)');
     }
 
+    // 7. ยกเลิกคิวงาน AI (Batch Job) ที่เกี่ยวกับไฟล์นี้ที่กำลังทำงานอยู่
     try {
       const pendingJobs = await this.prisma.intAiBatchJob.findMany({
         where: { companyId: companyId, status: 'PENDING' }
@@ -1926,10 +1974,12 @@ async verifyFileIntegrity(companyId: number, fileId: number) {
       console.error(`[Delete Warning] ไม่สามารถตรวจสอบหรือยกเลิกคิว AI ของเอกสาร ID ${fileId} ได้:`, error);
     }
 
+    // 8. ล้างข้อมูลออกจาก Vector Database (Knowledge Base)
     if (file.knowledgeBaseId) {
       await this.prisma.intKnowledgeBase.delete({ where: { id: file.knowledgeBaseId } }).catch(() => null);
     }
 
+    // 9. ลบข้อมูลเอกสารออกจากระบบ
     await this.prisma.docFile.delete({ where: { id: fileId } });
 
     return { message: 'ลบเอกสารและประวัติเวอร์ชันทั้งหมดออกจากระบบเรียบร้อยแล้ว' };
