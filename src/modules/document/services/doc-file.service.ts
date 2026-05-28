@@ -1827,11 +1827,11 @@ async verifyFileIntegrity(companyId: number, fileId: number) {
 
 
 // ==========================================
-  // ดึงรายการไฟล์ในโฟลเดอร์ (🌟 อัปเดต Draft Guard: ซ่อนไฟล์ที่ยังไม่อนุมัติ)
+  // ดึงรายการไฟล์ในโฟลเดอร์ (🌟 รวม Draft Guard และ Access Control)
   // ==========================================
   async getFilesByFolder(companyId: number, folderId?: number, userId: number = 0, roleId: number = 0) {
     
-    // 1. คำนวณสิทธิ์ระดับโฟลเดอร์ล่วงหน้า
+    // 1. คำนวณสิทธิ์ระดับโฟลเดอร์ล่วงหน้า (เอาไว้เป็น Default ให้กับไฟล์ที่อยู่ข้างใน)
     let folderHasViewAccess = false;
     if (folderId) {
       if (roleId === 1) {
@@ -1840,9 +1840,10 @@ async verifyFileIntegrity(companyId: number, fileId: number) {
         folderHasViewAccess = await this.hasFolderAccess(folderId, userId, roleId, 'canView');
       }
     } else {
-      folderHasViewAccess = true; 
+      folderHasViewAccess = true; // หน้า Root ให้เห็นไฟล์ของตัวเอง
     }
 
+    // 2. ดึงไฟล์ทั้งหมดในโฟลเดอร์นั้น
     const files = await this.prisma.docFile.findMany({
       where: {
         companyId,
@@ -1851,7 +1852,6 @@ async verifyFileIntegrity(companyId: number, fileId: number) {
       include: {
         uploadedBy: { select: { id: true, username: true, fullName: true } },
         accessRoles: true,
-        // 🌟 [แก้ไข 1] เอา take: 1 ออก เพื่อให้สามารถหาเวอร์ชันเก่าที่เคยอนุมัติแล้ว (isCurrent=true) เจอ
         versions: { orderBy: { version: 'desc' } }, 
         wfRequest: {
           include: { currentNode: true }
@@ -1863,28 +1863,43 @@ async verifyFileIntegrity(companyId: number, fileId: number) {
     const result: any[] = [];
 
     for (const file of files) {
-      // กรณีหน้า Root
+      // ----------------------------------------------------
+      // กฎข้อ 1: กรณีไฟล์อยู่หน้า Root (ไม่ได้อยู่ในโฟลเดอร์)
+      // ----------------------------------------------------
       if (!file.folderId) {
         if (roleId !== 1 && file.uploadedById !== userId) {
           continue; 
         }
       }
 
-      // 🌟 [แก้ไข 2] ด่านตรวจ Draft Guard
+      // ----------------------------------------------------
+      // กฎข้อ 2: Draft Guard (คัดกรองการมองเห็นตามสถานะอนุมัติ)
+      // ----------------------------------------------------
       const canAccessDraft = await this.hasDraftAccess(file, userId, roleId, false);
-      
-      if (!canAccessDraft) {
-        // เช็กว่ามีเวอร์ชันปัจจุบัน หรือ สถานะ Workflow อนุมัติแล้ว
+      let isVisible = false;
+
+      // กลุ่มที่ 1: Manager/คนอัปโหลด (เห็นทุกไฟล์เสมอ ทั้ง Draft และ Approved)
+      if (canAccessDraft) {
+        isVisible = true;
+      } 
+      // กลุ่มที่ 2: Staff ทั่วไป / ผู้ชม (จะเห็นเฉพาะไฟล์ที่ผ่านการอนุมัติแล้วเท่านั้น)
+      else {
         const activeVersion = file.versions.find((v: any) => v.isCurrent === true);
         const isApproved = file.wfRequest && file.wfRequest.status === 'APPROVED';
 
-        // ถ้ายังไม่มีเวอร์ชันใช้งานจริง และยังไม่อนุมัติ ถึงจะซ่อนไฟล์
-        if (!activeVersion && !isApproved) {
-          continue; 
+        if (activeVersion || isApproved) {
+           isVisible = true; 
         }
       }
 
-      // 3. คำนวณสิทธิ์การเข้าถึง "ไฟล์ฉบับนี้" (เอาไว้โชว์ปุ่มขอสิทธิ์)
+      // ถ้าไม่ผ่านเกณฑ์การมองเห็น ให้ข้ามไฟล์นี้ไป (ล่องหนจากหน้า UI)
+      if (!isVisible) {
+        continue; 
+      }
+
+      // ----------------------------------------------------
+      // กฎข้อ 3: ตรวจสอบสิทธิ์ "canView" ของไฟล์ฉบับนี้ (เพื่อแสดงปุ่ม/ขอสิทธิ์)
+      // ----------------------------------------------------
       let fileHasAccess = false;
       
       if (roleId === 1) {
@@ -1895,6 +1910,7 @@ async verifyFileIntegrity(companyId: number, fileId: number) {
       } 
       else {
         const now = new Date();
+        // เช็กสิทธิ์พิเศษที่อาจจะได้จากการ "ขอสิทธิ์" (DocFileAccess)
         const hasSpecificFileAccess = file.accessRoles && file.accessRoles.some(acc => {
           if (acc.expiresAt && new Date(acc.expiresAt) < now) return false;
           return (acc.roleId === roleId || acc.userId === userId) && acc.canView;
@@ -1903,10 +1919,14 @@ async verifyFileIntegrity(companyId: number, fileId: number) {
         if (hasSpecificFileAccess) {
           fileHasAccess = true;
         } else if (file.folderId) {
+          // ถ้าไม่มีสิทธิ์พิเศษ ให้ยึดตามสิทธิ์ของโฟลเดอร์แม่
           fileHasAccess = folderHasViewAccess; 
         }
       }
 
+      // ----------------------------------------------------
+      // กฎข้อ 4: การซ่อน URL ป้องกันการดาวน์โหลดตรง (Security)
+      // ----------------------------------------------------
       const isLockedByPassword = !!file.filePassword; 
       const isPendingApproval = file.wfRequest && ['PENDING', 'IN_PROGRESS'].includes(file.wfRequest.status);
       
@@ -1914,7 +1934,7 @@ async verifyFileIntegrity(companyId: number, fileId: number) {
 
       result.push({
         ...file,
-        filePassword: undefined, 
+        filePassword: undefined, // ห้ามส่งรหัสผ่านออกไปหน้าบ้านเด็ดขาด
         isLocked: isLockedByPassword,
         hasAccess: fileHasAccess,     
         isPendingApproval: isPendingApproval, 

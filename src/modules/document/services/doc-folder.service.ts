@@ -443,45 +443,60 @@ export class DocFolderService {
 
 
   // ==========================================
-  // 🔍 Helper 1: เช็กสิทธิ์โฟลเดอร์แบบ Multi-Role (ลอจิกเดียวกับ DocFile)
+  // 🛡️ Helper Function: ตรวจสอบสิทธิ์การเข้าถึงโฟลเดอร์แบบเข้มงวด
   // ==========================================
-  private async hasFolderAccess(
-    folderId: number | null, 
+  async hasFolderAccess(
+    folderId: number, 
     userId: number, 
     roleId: number, 
     permissionField: 'canView' | 'canUpload' | 'canDelete'
   ): Promise<boolean> {
-    if (!folderId) return false;
+    
+    // 1. Super Admin (roleId = 1) มีสิทธิ์ทำได้ทุกอย่างเสมอ
+    if (roleId === 1) return true;
 
+    // 2. ดึงข้อมูลโฟลเดอร์เพื่อตรวจสอบว่ามีอยู่จริงหรือไม่
     const folder = await this.prisma.docFolder.findUnique({
       where: { id: folderId }
     });
     if (!folder) return false;
 
-    // ดึง Role ทั้งหมดที่ User ถืออยู่มาเช็ก
+    // 3. หา Role ทั้งหมดของ User คนนี้ (เผื่อ 1 คนมีหลาย Role)
     const userRoles = await this.prisma.secUserRole.findMany({
-      where: { userId: userId }
+      where: { userId: userId },
+      select: { roleId: true }
     });
     const myRoleIds = userRoles.map(ur => ur.roleId);
-
-    if (roleId > 0 && !myRoleIds.includes(roleId)) {
+    // รวม roleId ปัจจุบันที่ส่งเข้ามาด้วยเพื่อความชัวร์
+    if (!myRoleIds.includes(roleId)) {
       myRoleIds.push(roleId);
     }
 
+    // 4. ตรวจสอบสิทธิ์ที่ตั้งค่าไว้กับโฟลเดอร์นี้โดยตรง
+    // 🌟 [จุดแก้บั๊ก] บังคับว่า permissionField ที่ต้องการ (เช่น canUpload) ต้องเป็น true เท่านั้น!
     const explicitAccess = await this.prisma.docFolderAccess.findFirst({
       where: {
-        folderId,
+        folderId: folderId,
         OR: [
           { userId: userId },
           { roleId: { in: myRoleIds } }
-        ]
+        ],
+        [permissionField]: true 
       }
     });
 
-    if (explicitAccess) return !!explicitAccess[permissionField];
-    if (folder.isWorkspace || !folder.parentId) return false;
+    // 5. ถ้าพบว่ามีการให้สิทธิ์นี้ไว้เป็น true จริงๆ ให้ผ่านเลย
+    if (explicitAccess) {
+      return true;
+    }
 
-    return this.hasFolderAccess(folder.parentId, userId, roleId, permissionField);
+    // 6. ถ้าโฟลเดอร์นี้มี Parent Folder ให้สืบทอดสิทธิ์จาก Parent (Inheritance)
+    if (folder.parentId) {
+      return this.hasFolderAccess(folder.parentId, userId, roleId, permissionField);
+    }
+
+    // ถ้าไม่มีสิทธิ์และไม่มี Parent ให้ถือว่าไม่อนุญาต (false)
+    return false;
   }
 
 
