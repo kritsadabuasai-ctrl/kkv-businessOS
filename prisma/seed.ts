@@ -837,12 +837,12 @@ async function main() {
       ]
     },
      {
-      name: 'ระบบ Workflow', icon: 'LayoutDashboard', sortOrder: 10, isSystem: false,
+      name: 'ระบบ Workflow', icon: 'Workflow', sortOrder: 10, isSystem: false,
       children: [
-        { name: 'Dashboard workflow', path: '/dashboard/workflow-dashboard', icon: 'FileText', sortOrder: 0, mod: 'MOD_CORE' },
+        { name: 'Dashboard workflow', path: '/dashboard/workflow-dashboard', icon: 'Building2', sortOrder: 0, mod: 'MOD_CORE' },
         { name: 'จัดการ workflow', path: '/dashboard/settings/workflow', icon: 'LayShieldCheckers', sortOrder: 1, mod: 'MOD_CORE' },
         { name: 'จับคู่ workflow', path: '/dashboard/settings/wf-mappings', icon: 'Package', sortOrder: 2, mod: 'MOD_CORE' },
-        { name: 'จำลอง workflow', path: '/dashboard/settings/wf-simulation', icon: 'FileText', sortOrder: 3, mod: 'MOD_CORE' },
+        { name: 'จำลอง workflow', path: '/dashboard/settings/wf-simulation', icon: 'UserCog', sortOrder: 3, mod: 'MOD_CORE' },
         { name: 'ตั้งค่าการโอนสิทธิ์', path: '/dashboard/settings/delegation', icon: 'FileText', sortOrder: 4, mod: 'MOD_CORE' },
         
         
@@ -862,18 +862,18 @@ async function main() {
     {
       name: 'ประเมินผล', icon: 'LayoutDashboard', sortOrder: 12, isSystem: false,
       children: [
-        { name: 'จัดการประเมินผล', path: '/dashboard/performance', icon: 'Users', sortOrder: 0, mod: 'MOD_HR' },
+        { name: 'จัดการประเมินผล', path: '/dashboard/performance', icon: 'Star', sortOrder: 0, mod: 'MOD_HR' },
         { name: 'ผลการประเมินรายบุคคล', path: '/dashboard/performance/personal-results', icon: 'Users', sortOrder: 1, mod: 'MOD_HR' },
-        { name: 'ผลการประเมินองค์กร', path: '/dashboard/performance/org-results', icon: 'Users', sortOrder: 2, mod: 'MOD_HR' },
+        { name: 'ผลการประเมินองค์กร', path: '/dashboard/performance/org-results', icon: 'Building2', sortOrder: 2, mod: 'MOD_HR' },
         
       ]
     },
     {
       name: 'บันทึกบทลงโทษ', icon: 'LayoutDashboard', sortOrder: 13, isSystem: false,
       children: [
-        { name: 'ภาพรวมบทลงโทษ', path: '/dashboard/hr/disciplinary/dashboard', icon: 'Users', sortOrder: 1, mod: 'MOD_HR' },
-        { name: 'จัดการบทลงโทษ', path: '/dashboard/hr/disciplinary', icon: 'Users', sortOrder: 2, mod: 'MOD_HR' },
-        { name: 'จัดการข้อร้องเรียน', path: '/dashboard/hr/grievance', icon: 'Users', sortOrder: 3, mod: 'MOD_HR' },
+        { name: 'ภาพรวมบทลงโทษ', path: '/dashboard/hr/disciplinary/dashboard', icon: 'FileText', sortOrder: 1, mod: 'MOD_HR' },
+        { name: 'จัดการบทลงโทษ', path: '/dashboard/hr/disciplinary', icon: 'UserCog', sortOrder: 2, mod: 'MOD_HR' },
+        { name: 'จัดการข้อร้องเรียน', path: '/dashboard/hr/grievance', icon: 'Megaphone', sortOrder: 3, mod: 'MOD_HR' },
         
       ]
     },
@@ -881,18 +881,18 @@ async function main() {
     {
       name: 'การฝึกอบรม', icon: 'LayoutDashboard', sortOrder: 13, isSystem: false,
       children: [
-        { name: 'ภาพรวมบทลงโทษ', path: '/dashboard/hr/executive-dashboard', icon: 'Users', sortOrder: 1, mod: 'MOD_HR' },
-        { name: 'จัดการบทลงโทษ', path: '/dashboard/hr/training', icon: 'Users', sortOrder: 2, mod: 'MOD_HR' },
-        { name: 'จองห้องฝึกอบรม', path: '/dashboard/admin/booking', icon: 'Users', sortOrder: 3, mod: 'MOD_HR' }, 
+        { name: 'ภาพรวมการฝึกอบรม', path: '/dashboard/hr/executive-dashboard', icon: 'BookOpen', sortOrder: 1, mod: 'MOD_HR' },
+        { name: 'จัดการหลักสูตรฝึกอบรม', path: '/dashboard/hr/training', icon: 'Workflow', sortOrder: 2, mod: 'MOD_HR' },
+        { name: 'จองห้องฝึกอบรม', path: '/dashboard/admin/booking', icon: 'Building2', sortOrder: 3, mod: 'MOD_HR' }, 
         
       ]
     },
 
      {
-      name: 'ระบบจัดการเอกสารภายใน', icon: 'LayoutDashboard', sortOrder: 14, isSystem: false,
+      name: 'ระบบจัดการเอกสารภายใน', icon: 'Layers', sortOrder: 14, isSystem: false,
       children: [
         { name: 'เอกสารภายใน', path: '/dashboard/dms', icon: 'Database', sortOrder: 0, mod: 'MOD_DOC' },
-        { name: 'เอกสารภายใน', path: '/dashboard/dms/access-management', icon: 'Users', sortOrder: 2, mod: 'MOD_DOC' },
+        { name: 'จัดการสิทธิ์การเข้าถึงไฟล์', path: '/dashboard/dms/access-management', icon: 'Users', sortOrder: 2, mod: 'MOD_DOC' },
                
       ]
     },
