@@ -1827,11 +1827,11 @@ async verifyFileIntegrity(companyId: number, fileId: number) {
 
 
 // ==========================================
-  // ดึงรายการไฟล์ในโฟลเดอร์ (🌟 อัปเดตกฎ: คนอัปโหลดไม่มีสิทธิ์ถาวรเมื่อไฟล์เข้าแฟ้ม + แยก Flag ชัดเจน)
+  // ดึงรายการไฟล์ในโฟลเดอร์ (🌟 อัปเดต Draft Guard: ซ่อนไฟล์ที่ยังไม่อนุมัติ)
   // ==========================================
   async getFilesByFolder(companyId: number, folderId?: number, userId: number = 0, roleId: number = 0) {
     
-    // 🌟 1. คำนวณสิทธิ์ระดับโฟลเดอร์ล่วงหน้า
+    // 1. คำนวณสิทธิ์ระดับโฟลเดอร์ล่วงหน้า
     let folderHasViewAccess = false;
     if (folderId) {
       if (roleId === 1) {
@@ -1840,7 +1840,7 @@ async verifyFileIntegrity(companyId: number, fileId: number) {
         folderHasViewAccess = await this.hasFolderAccess(folderId, userId, roleId, 'canView');
       }
     } else {
-      folderHasViewAccess = true; // หน้า Root อนุญาตให้ผ่านไปกรองระดับไฟล์ด้านล่าง
+      folderHasViewAccess = true; 
     }
 
     const files = await this.prisma.docFile.findMany({
@@ -1851,7 +1851,8 @@ async verifyFileIntegrity(companyId: number, fileId: number) {
       include: {
         uploadedBy: { select: { id: true, username: true, fullName: true } },
         accessRoles: true,
-        versions: { orderBy: { version: 'desc' }, take: 1 },
+        // 🌟 [แก้ไข 1] เอา take: 1 ออก เพื่อให้สามารถหาเวอร์ชันเก่าที่เคยอนุมัติแล้ว (isCurrent=true) เจอ
+        versions: { orderBy: { version: 'desc' } }, 
         wfRequest: {
           include: { currentNode: true }
         } 
@@ -1859,30 +1860,38 @@ async verifyFileIntegrity(companyId: number, fileId: number) {
       orderBy: { createdAt: 'desc' },
     });
 
-    // 🌟 2. กรองไฟล์ก่อนส่งไปหน้าบ้าน
-    const filteredFiles = files.filter(file => {
-      // กรณีไฟล์ยังไม่เข้าแฟ้ม (หน้า Root)
-      if (!file.folderId) {
-        if (roleId === 1) return true; 
-        if (file.uploadedById === userId) return true; // ต้องให้เห็นไฟล์ตัวเองชั่วคราวเพื่อรอจัดเก็บ
-        return false; 
-      }
-      return true; // ถ้ามีแฟ้มแล้ว ให้ผ่านไปเช็กกุญแจล็อกด้านล่าง
-    });
+    const result: any[] = [];
 
-    return filteredFiles.map(file => {
-      // 🌟 3. คำนวณสิทธิ์การเข้าถึง "ไฟล์ฉบับนี้" 
+    for (const file of files) {
+      // กรณีหน้า Root
+      if (!file.folderId) {
+        if (roleId !== 1 && file.uploadedById !== userId) {
+          continue; 
+        }
+      }
+
+      // 🌟 [แก้ไข 2] ด่านตรวจ Draft Guard (ถ้าเป็นไฟล์ใหม่ซิงๆ และไม่มีสิทธิ์ จะถูกซ่อนออกจากหน้ารายการทันที)
+      const canAccessDraft = await this.hasDraftAccess(file, userId, roleId, false);
+      
+      if (!canAccessDraft) {
+        // หาเวอร์ชันที่ใช้งานจริง (อนุมัติแล้ว)
+        const activeVersion = file.versions.find((v: any) => v.isCurrent === true);
+        if (!activeVersion) {
+          // 🛑 ถ้าย้อนดูแล้วไม่มีเวอร์ชันที่อนุมัติเลย (ไฟล์เพิ่งสร้าง V1) ให้ "ซ่อน" ไม่ให้เห็นในลิสต์เลย!
+          continue; 
+        }
+      }
+
+      // 3. คำนวณสิทธิ์การเข้าถึง "ไฟล์ฉบับนี้" (เอาไว้โชว์ปุ่มขอสิทธิ์)
       let fileHasAccess = false;
       
       if (roleId === 1) {
-        fileHasAccess = true; // Super Admin ทะลุได้หมด
+        fileHasAccess = true; 
       } 
-      // 🚨 ให้สิทธิ์คนอัปโหลด *เฉพาะ* ตอนที่ไฟล์ยังไม่เข้าโฟลเดอร์เท่านั้น
       else if (!file.folderId && file.uploadedById === userId) {
         fileHasAccess = true; 
       } 
       else {
-        // 🚨 ถ้าเข้าโฟลเดอร์แล้ว เช็กสิทธิ์ตามกฎล้วนๆ ไม่สนว่าเป็นคนอัปโหลดหรือไม่
         const now = new Date();
         const hasSpecificFileAccess = file.accessRoles && file.accessRoles.some(acc => {
           if (acc.expiresAt && new Date(acc.expiresAt) < now) return false;
@@ -1899,27 +1908,25 @@ async verifyFileIntegrity(companyId: number, fileId: number) {
       const isLockedByPassword = !!file.filePassword; 
       const isPendingApproval = file.wfRequest && ['PENDING', 'IN_PROGRESS'].includes(file.wfRequest.status);
       
-      // ซ่อน URL ถ้าไม่มีสิทธิ์, ติดรหัสผ่าน, หรือกำลังรออนุมัติ
       const shouldHideUrl = isLockedByPassword || isPendingApproval || !fileHasAccess;
 
-      return {
+      result.push({
         ...file,
         filePassword: undefined, 
-        
-        // 🚨 [แก้ไขจุดนี้] แยก Flag ออกจากกันให้ชัดเจน
-        isLocked: isLockedByPassword, // 🔒 บอกหน้าบ้านว่าติด "รหัสผ่าน" (ป้ายสีชมพู)
-        hasAccess: fileHasAccess,     // ✋ บอกหน้าบ้านว่าต้องขึ้นปุ่ม "ขอสิทธิ์" (ป้ายสีส้ม)
-        
+        isLocked: isLockedByPassword,
+        hasAccess: fileHasAccess,     
         isPendingApproval: isPendingApproval, 
         currentUrl: shouldHideUrl ? null : file.currentUrl, 
         workflowStatus: file.wfRequest ? file.wfRequest.status : null,
         pendingStepName: isPendingApproval && file.wfRequest?.currentNode ? file.wfRequest.currentNode.nodeName : null,
-        versions: file.versions.map(v => ({
+        versions: file.versions.map((v: any) => ({
            ...v,
            url: shouldHideUrl ? null : v.url
         }))
-      };
-    });
+      });
+    }
+
+    return result;
   }
 
  // ==========================================
