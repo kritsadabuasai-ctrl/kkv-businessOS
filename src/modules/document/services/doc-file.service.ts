@@ -1133,6 +1133,117 @@ async verifyFileIntegrity(companyId: number, fileId: number) {
     }
   }
 
+
+  // ==========================================
+  // 🔍 Helper: ด่านตรวจสิทธิ์ "ผู้จัดการไฟล์" (ใช้ร่วมกันหลายฟังก์ชัน)
+  // ==========================================
+  private async checkCanManageFile(fileId: number, companyId: number, userId: number, roleId: number): Promise<boolean> {
+    const file = await this.prisma.docFile.findFirst({
+      where: { id: fileId, companyId },
+      include: { folder: true }
+    });
+
+    if (!file) return false;
+
+    if (roleId === 1) return true; // Super Admin ทำได้เสมอ
+    
+    if (file.folderId) {
+      // เช็กสิทธิ์ canDelete จากโฟลเดอร์แม่
+      return await this.hasFolderAccess(file.folderId, userId, roleId, 'canDelete');
+    } else {
+      // ไฟล์ที่ยังไม่เข้าแฟ้ม คนอัปโหลดเป็นผู้จัดการ
+      return file.uploadedById === userId;
+    }
+  }
+
+  // ==========================================
+  // 🛡️ 1. ดึงรายการสิทธิ์ที่ "ฉันมีอำนาจจัดการ" (โชว์ในหน้า Dashboard)
+  // ==========================================
+  async getManagedAccessList(companyId: number, userId: number, roleId: number) {
+    const now = new Date();
+
+    // 1. ดึงสิทธิ์ที่ "ยังไม่หมดอายุ" หรือ "ไม่มีวันหมดอายุ" ทั้งหมดของบริษัทออกมาก่อน
+    const activeAccesses = await this.prisma.docFileAccess.findMany({
+      where: {
+        companyId,
+        OR: [
+          { expiresAt: { gt: now } },
+          { expiresAt: null }
+        ]
+      },
+      include: {
+        file: { 
+          select: { id: true, fileName: true, folderId: true, uploadedById: true } 
+        },
+        user: { 
+          select: { id: true, fullName: true, username: true } 
+        },
+        role: { 
+          select: { id: true, name: true, displayName: true } 
+        }
+      },
+      orderBy: { expiresAt: 'asc' } // เรียงอันที่ใกล้หมดอายุขึ้นก่อน
+    });
+
+    // 2. กรองข้อมูล (Row-Level Security) เอาเฉพาะไฟล์ที่ฉันมีสิทธิ์ canDelete
+    const managedList: any[] = [];
+    for (const access of activeAccesses) {
+      const canManage = await this.checkCanManageFile(access.fileId, companyId, userId, roleId);
+      if (canManage) {
+        managedList.push(access);
+      }
+    }
+
+    return managedList;
+  }
+
+  // ==========================================
+  // 🛡️ 2. ยกเลิกสิทธิ์ทันที (Revoke Access)
+  // ==========================================
+  async revokeFileAccessGrant(companyId: number, fileId: number, accessId: number, userId: number, roleId: number) {
+    // ด่านตรวจสิทธิ์ canDelete
+    const canManage = await this.checkCanManageFile(fileId, companyId, userId, roleId);
+    if (!canManage) throw new ForbiddenException('คุณไม่มีสิทธิ์จัดการสิทธิ์การเข้าถึงของไฟล์นี้');
+
+    // ลบสิทธิ์ออกจาก Database ทันที (หรือจะใช้วิธี set expiresAt = now() ก็ได้ แต่ลบออกเลยจะคลีนกว่าครับ)
+    await this.prisma.docFileAccess.delete({
+      where: { id: accessId }
+    });
+
+    return { message: 'ตัดสิทธิ์การเข้าถึงเรียบร้อยแล้ว ผู้ใช้นี้จะไม่สามารถเข้าถึงไฟล์ได้อีก' };
+  }
+
+  // ==========================================
+  // 🛡️ 3. ขยายเวลาสิทธิ์ (Extend Access)
+  // ==========================================
+  async extendFileAccessGrant(companyId: number, fileId: number, accessId: number, userId: number, roleId: number, additionalDays: number) {
+    // ด่านตรวจสิทธิ์ canDelete
+    const canManage = await this.checkCanManageFile(fileId, companyId, userId, roleId);
+    if (!canManage) throw new ForbiddenException('คุณไม่มีสิทธิ์จัดการสิทธิ์การเข้าถึงของไฟล์นี้');
+
+    const accessRecord = await this.prisma.docFileAccess.findUnique({ where: { id: accessId } });
+    if (!accessRecord) throw new NotFoundException('ไม่พบข้อมูลสิทธิ์นี้ในระบบ');
+
+    // คำนวณวันหมดอายุใหม่ โดยนับต่อจากของเดิม (หรือนับจากปัจจุบันถ้าระบุเป็น null มา)
+    const baseDate = accessRecord.expiresAt && accessRecord.expiresAt > new Date() 
+                     ? accessRecord.expiresAt 
+                     : new Date();
+                     
+    const newExpireDate = new Date(baseDate);
+    newExpireDate.setDate(newExpireDate.getDate() + additionalDays);
+
+    await this.prisma.docFileAccess.update({
+      where: { id: accessId },
+      data: { expiresAt: newExpireDate }
+    });
+
+    return { 
+      message: `ขยายเวลาการเข้าถึงเรียบร้อยแล้ว สิทธิ์จะหมดอายุในวันที่ ${newExpireDate.toLocaleDateString('th-TH')}`,
+      newExpireDate
+    };
+  }
+
+
 // ==========================================
   // 🕒 ระบบลบไฟล์อัตโนมัติเมื่อถึงกำหนดเวลา (Retention Policy)
   // ==========================================

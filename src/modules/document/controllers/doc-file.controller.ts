@@ -1,5 +1,5 @@
 import { 
-  Controller, Post, Get, Put, Delete, Body, Param, 
+  Controller, Post, Get, Put, Delete, Body, Param, Patch,
   ParseIntPipe, Query, UseGuards, Req, BadRequestException  ,Request ,UseInterceptors, UploadedFile
 } from '@nestjs/common';
 import { ApiTags, ApiBearerAuth, ApiOperation } from '@nestjs/swagger';
@@ -402,5 +402,45 @@ export class DocFileController {
     dto.targetType = AccessTargetType.FILE; 
 
     return this.docFileService.requestFileAccess(req.user.companyId, userId, dto);
+  }
+
+  // ---------------------------------------------------------
+  // 🛡️ หน้าจัดการสิทธิ์ส่วนกลาง (Access Management Dashboard)
+  // ---------------------------------------------------------
+
+  @ApiOperation({ summary: 'ดึงรายการสิทธิ์การเข้าถึงไฟล์ทั้งหมดที่ฉันมีอำนาจจัดการ' })
+  @RequirePermissions('document:update') // 🌟 เช็กสิทธิ์เข้าเมนู (Global Permission)
+  @Get('managed-accesses')
+  getManagedAccessList(@Req() req: any) {
+    const userId = req.user?.id || req.user?.userId;
+    const roleId = Number(req.user?.roleId || 0);
+    return this.docFileService.getManagedAccessList(req.user.companyId, userId, roleId);
+  }
+
+  @ApiOperation({ summary: 'ยกเลิกสิทธิ์การเข้าถึงไฟล์ก่อนกำหนด (Revoke)' })
+  @RequirePermissions('document:update')
+  @Delete(':fileId/access/:accessId/revoke')
+  revokeAccess(
+    @Param('fileId', ParseIntPipe) fileId: number,
+    @Param('accessId', ParseIntPipe) accessId: number,
+    @Req() req: any
+  ) {
+    const userId = req.user?.id || req.user?.userId;
+    const roleId = Number(req.user?.roleId || 0);
+    return this.docFileService.revokeFileAccessGrant(req.user.companyId, fileId, accessId, userId, roleId);
+  }
+
+  @ApiOperation({ summary: 'ขยายเวลาการเข้าถึงไฟล์ (Extend)' })
+  @RequirePermissions('document:update')
+  @Patch(':fileId/access/:accessId/extend')
+  extendAccess(
+    @Param('fileId', ParseIntPipe) fileId: number,
+    @Param('accessId', ParseIntPipe) accessId: number,
+    @Body('additionalDays', ParseIntPipe) additionalDays: number,
+    @Req() req: any
+  ) {
+    const userId = req.user?.id || req.user?.userId;
+    const roleId = Number(req.user?.roleId || 0);
+    return this.docFileService.extendFileAccessGrant(req.user.companyId, fileId, accessId, userId, roleId, additionalDays);
   }
 }
