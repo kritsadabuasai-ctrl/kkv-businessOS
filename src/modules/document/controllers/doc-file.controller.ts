@@ -49,18 +49,22 @@ export class DocFileController {
   }
 
   @ApiOperation({ summary: 'ดาวน์โหลดเอกสารต้นฉบับ (ไม่มีลายน้ำ - เฉพาะผู้ได้รับอนุมัติชั่วคราว/แอดมิน)' })
-  @RequirePermissions('document:view') // 🌟 ดักด่านแรกเพื่อความปลอดภัยระดับ Controller
+  @RequirePermissions('document:view')
   @Get(':id/download-original')
   async downloadOriginal(
     @Param('id', ParseIntPipe) id: number,
     @Req() req: any,
     @Res({ passthrough: true }) res: Response
   ) {
+    // 🌟 [แก้บั๊ก] ดึง userId ให้รัดกุม ป้องกันค่า undefined
+    const userId = Number(req.user?.userId || req.user?.id || req.user?.sub);
+    const roleId = Number(req.user?.roleId || 0);
+
     const result = await this.docFileService.downloadOriginalFile(
       req.user.companyId,
       id,
-      req.user.id,
-      req.user.roleId
+      userId, 
+      roleId
     );
 
     res.set({
@@ -70,6 +74,7 @@ export class DocFileController {
 
     return result.fileStream;
   }
+
 
   @ApiOperation({ summary: 'ดึงรายการไฟล์ในโฟลเดอร์' })
   @RequirePermissions('document:view')
@@ -112,22 +117,24 @@ export class DocFileController {
   async viewFile(
     @Param('id', ParseIntPipe) id: number, 
     @Req() req: any,
-    @Res({ passthrough: true }) res: Response // 🌟 1. เพิ่ม @Res เพื่อใช้จัดการ Header
+    @Res({ passthrough: true }) res: Response 
   ) {
+    // 🌟 [แก้บั๊ก] ดึง userId ให้รัดกุม
+    const userId = Number(req.user?.userId || req.user?.id || req.user?.sub);
+    const roleId = Number(req.user?.roleId || 0);
+
     const result = await this.docFileService.viewFile(
       req.user.companyId, 
       id, 
-      req.user.id, 
-      req.user.roleId
+      userId, 
+      roleId
     );
 
-    // 🌟 2. ตั้งค่า Header ให้เบราว์เซอร์เปิดแสดงผลแบบ PDF Inline บนหน้าเว็บ
     res.set({
       'Content-Type': result.mimeType,
       'Content-Disposition': `inline; filename="${encodeURIComponent(result.fileName)}"`,
     });
 
-    // 🌟 3. ส่งเฉพาะตัวสตรีมไฟล์ออกไป (ไม่ส่งก้อน JSON)
     return result.fileStream;
   }
 
@@ -136,16 +143,19 @@ export class DocFileController {
   async downloadFile(
     @Param('id', ParseIntPipe) id: number, 
     @Req() req: any,
-    @Res({ passthrough: true }) res: Response // 🌟 1. เพิ่ม @Res เช่นกัน
+    @Res({ passthrough: true }) res: Response 
   ) {
+    // 🌟 [แก้บั๊ก] ดึง userId ให้รัดกุม
+    const userId = Number(req.user?.userId || req.user?.id || req.user?.sub);
+    const roleId = Number(req.user?.roleId || 0);
+
     const result = await this.docFileService.downloadFile(
       req.user.companyId, 
       id, 
-      req.user.id, 
-      req.user.roleId
+      userId, 
+      roleId
     );
 
-    // 🌟 2. ตั้งค่า Header เป็น attachment เพื่อบังคับให้ดาวน์โหลดลงเครื่องทันที
     res.set({
       'Content-Type': result.mimeType,
       'Content-Disposition': `attachment; filename="${encodeURIComponent(result.fileName)}"`,
