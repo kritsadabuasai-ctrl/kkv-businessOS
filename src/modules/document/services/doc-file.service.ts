@@ -749,7 +749,7 @@ async verifyFileIntegrity(companyId: number, fileId: number) {
  // ==========================================
   // 📄 [ฟังก์ชันเต็ม] ดูไฟล์ผ่าน Proxy (SharePoint Access Control + ลายน้ำเฉพาะ PDF + Workflow Guard + Tamper-Proof)
   // ==========================================
-  async viewFile(companyId: number, fileId: number, userId: number, roleId: number, isHQ: boolean = false) {
+  async viewFile(companyId: number, fileId: number, userId: number, roleId: number) { // 🌟 นำ isHQ ออก
     // 🌟 [UPDATE] ดึงไฟล์พร้อมข้อมูลโฟลเดอร์, workflow, และประวัติเวอร์ชันทั้งหมดเพื่อใช้คุมสิทธิ์
     const file = await this.prisma.docFile.findFirst({
       where: { id: fileId, companyId },
@@ -798,7 +798,7 @@ async verifyFileIntegrity(companyId: number, fileId: number) {
     }
 
     // 🌟 [NEW GUARD] ตรวจสอบสิทธิ์การเข้าถึงไฟล์ฉบับร่าง/ระหว่างอนุมัติ (Workflow Context Guard)
-    const canAccessDraft = await this.hasDraftAccess(file, userId, roleId, isHQ);
+    const canAccessDraft = await this.hasDraftAccess(file, userId, roleId, false); // 🌟 เปลี่ยน isHQ เป็น false
     let targetUrl = file.currentUrl;
 
     if (!canAccessDraft) {
@@ -838,9 +838,9 @@ async verifyFileIntegrity(companyId: number, fileId: number) {
       await this.prisma.logDocumentTrace.create({
         data: {
                 fileHash: fileHash,
-                company: { connect: { id: companyId } },
-                originalFile: { connect: { id: fileId } },
-                downloadedBy: { connect: { id: userId } } // 👈 ใส่ตรงๆ แบบนี้เลย ไม่ต้องมีเงื่อนไข if ครอบครับ
+                companyId: companyId, // 🌟 แก้ไข: ใช้ ID ตรงๆ 
+                originalFileId: fileId, // 🌟 แก้ไข: ใช้ ID ตรงๆ
+                downloadedById: userId // 🌟 แก้ไข: ใช้ ID ตรงๆ
               }
         });
 
@@ -857,10 +857,10 @@ async verifyFileIntegrity(companyId: number, fileId: number) {
     }
   }
 
-  // ==========================================
+ // ==========================================
   // 📥 [ฟังก์ชันเต็ม] ดาวน์โหลดไฟล์ (SharePoint Access Control + ลายน้ำสำหรับ PDF + Workflow Guard + Tamper-Proof)
   // ==========================================
-  async downloadFile(companyId: number, fileId: number, userId: number, roleId: number, isHQ: boolean = false) {
+  async downloadFile(companyId: number, fileId: number, userId: number, roleId: number) { // 🌟 นำ isHQ ออก
     // 🌟 [UPDATE] ดึงไฟล์พร้อมข้อมูลโฟลเดอร์, workflow, และประวัติเวอร์ชันทั้งหมดเพื่อใช้คุมสิทธิ์
     const file = await this.prisma.docFile.findFirst({
       where: { id: fileId, companyId },
@@ -907,7 +907,7 @@ async verifyFileIntegrity(companyId: number, fileId: number) {
     if (!hasAccess) throw new ForbiddenException('คุณไม่มีสิทธิ์ดาวน์โหลดเอกสารนี้ (สิทธิ์ใน Workspace ของคุณถูกระงับหรือสิ้นสุดลงแล้ว)');
 
     // 🌟 [NEW GUARD] ตรวจสอบสิทธิ์การเข้าถึงไฟล์ฉบับร่าง/ระหว่างอนุมัติ (Workflow Context Guard)
-    const canAccessDraft = await this.hasDraftAccess(file, userId, roleId, isHQ);
+    const canAccessDraft = await this.hasDraftAccess(file, userId, roleId, false); // 🌟 เปลี่ยน isHQ เป็น false
     let targetUrl = file.currentUrl;
 
     if (!canAccessDraft) {
@@ -946,9 +946,9 @@ async verifyFileIntegrity(companyId: number, fileId: number) {
       await this.prisma.logDocumentTrace.create({
         data: {
                 fileHash: fileHash,
-                company: { connect: { id: companyId } },
-                originalFile: { connect: { id: fileId } },
-                downloadedBy: { connect: { id: userId } } // 👈 ใส่ตรงๆ แบบนี้เลย ไม่ต้องมีเงื่อนไข if ครอบครับ
+                companyId: companyId, // 🌟 แก้ไข: ใช้ ID ตรงๆ 
+                originalFileId: fileId, // 🌟 แก้ไข: ใช้ ID ตรงๆ
+                downloadedById: userId // 🌟 แก้ไข: ใช้ ID ตรงๆ
               }
         });
 
@@ -1055,7 +1055,7 @@ async verifyFileIntegrity(companyId: number, fileId: number) {
   // ==========================================
   // 💎 [ฟังก์ชันเต็ม] ดาวน์โหลดเอกสารต้นฉบับแบบไม่มีลายน้ำ (Strict Folder Guard + Workflow Access + Tamper-Proof)
   // ==========================================
-  async downloadOriginalFile(companyId: number, fileId: number, userId: number, roleId: number, isHQ: boolean = false) {
+  async downloadOriginalFile(companyId: number, fileId: number, userId: number, roleId: number) { // 🌟 นำ isHQ ออก
     const file = await this.prisma.docFile.findFirst({
       where: { id: fileId, companyId },
       include: { 
@@ -1118,7 +1118,7 @@ async verifyFileIntegrity(companyId: number, fileId: number) {
     }
 
     // --- 🛡️ ด่านที่ 3: เช็กสิทธิ์เข้าถึงไฟล์ร่าง/รออนุมัติ (Workflow Context Guard) ---
-    const canAccessDraft = await this.hasDraftAccess(file, userId, roleId, isHQ);
+    const canAccessDraft = await this.hasDraftAccess(file, userId, roleId, false); // 🌟 เปลี่ยน isHQ เป็น false
     let targetUrl = file.currentUrl;
 
     if (!canAccessDraft) {
@@ -1150,9 +1150,9 @@ async verifyFileIntegrity(companyId: number, fileId: number) {
       await this.prisma.logDocumentTrace.create({
         data: {
                 fileHash: fileHash,
-                company: { connect: { id: companyId } },
-                originalFile: { connect: { id: fileId } },
-                downloadedBy: { connect: { id: userId } } // 👈 ใส่ตรงๆ แบบนี้เลย ไม่ต้องมีเงื่อนไข if ครอบครับ
+                companyId: companyId, // 🌟 แก้ไข: ใช้ ID ตรงๆ 
+                originalFileId: fileId, // 🌟 แก้ไข: ใช้ ID ตรงๆ
+                downloadedById: userId // 🌟 แก้ไข: ใช้ ID ตรงๆ
               }
         });
       
