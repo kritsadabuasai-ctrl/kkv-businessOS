@@ -843,6 +843,9 @@ async verifyFileIntegrity(companyId: number, fileId: number) {
         fileName: file.fileName
       };
     } catch (error: any) {
+      // 🌟 สั่งปริ้นท์ URL และ Error ของจริงลง Console ของ Backend จะได้รู้ว่าพังที่ลิงก์ไหน
+      console.error(`[File Access Error] URL ที่พยายามโหลด: ${targetUrl}`);
+      console.error(`รายละเอียด Error: ${error.message}`);
       if (error instanceof ForbiddenException) throw error;
       throw new InternalServerErrorException('ไม่สามารถดึงข้อมูลไฟล์มาแสดงผลได้');
     }
@@ -942,6 +945,8 @@ async verifyFileIntegrity(companyId: number, fileId: number) {
         fileName: file.fileName
       };
     } catch (error: any) {
+      console.error(`[File Access Error] URL ที่พยายามโหลด: ${targetUrl}`);
+      console.error(`รายละเอียด Error: ${error.message}`);
       if (error instanceof ForbiddenException) throw error;
       throw new InternalServerErrorException('ไม่สามารถดาวน์โหลดข้อมูลไฟล์ได้');
     }
@@ -1137,6 +1142,8 @@ async verifyFileIntegrity(companyId: number, fileId: number) {
         fileName: file.fileName
       };
     } catch (error: any) {
+      console.error(`[File Access Error] URL ที่พยายามโหลด: ${targetUrl}`);
+      console.error(`รายละเอียด Error: ${error.message}`);
       if (error instanceof ForbiddenException) throw error;
       throw new InternalServerErrorException('ไม่สามารถดาวน์โหลดไฟล์ต้นฉบับได้');
     }
