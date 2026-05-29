@@ -1,4 +1,4 @@
-import { Controller, Post, UseInterceptors, UploadedFile, Query, BadRequestException, UseGuards, Request ,Logger } from '@nestjs/common';
+import { Controller, Post, UseInterceptors, UploadedFile, Query, BadRequestException, UseGuards, Request ,Logger, Inject, forwardRef } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { JwtAuthGuard } from '../../sec/auth/jwt-auth.guard';
 import { PermissionsGuard } from '../../sec/auth/permissions.guard';
@@ -14,6 +14,8 @@ export class UploadController {
   
   constructor(
     private readonly uploadService: UploadService,
+    // 🌟 2. ครอบ StorageService ด้วย @Inject(forwardRef()) ตรงนี้ครับ!
+    @Inject(forwardRef(() => StorageService))
     private readonly storageService: StorageService // ✅ Inject เข้ามาใช้งาน
   ) {} 
 
