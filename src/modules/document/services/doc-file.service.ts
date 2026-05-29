@@ -830,7 +830,7 @@ async viewFile(companyId: number, fileId: number, userId: number, roleId: number
 }
 
 // ==========================================
-// 📥 [อัปเดต] ดาวน์โหลดไฟล์ (รองรับรูปภาพ + PDF ลายน้ำ)
+// 📥 [อัปเดต] ดาวน์โหลดไฟล์ (รองรับรูปภาพ + PDF ลายน้ำ + ถอดหน้ากาก Error)
 // ==========================================
 async downloadFile(companyId: number, fileId: number, userId: number, roleId: number, isHQ: boolean = false) {
   const file = await this.prisma.docFile.findFirst({
@@ -840,7 +840,6 @@ async downloadFile(companyId: number, fileId: number, userId: number, roleId: nu
 
   if (!file) throw new NotFoundException('ไม่พบเอกสาร');
 
-  // ... (โค้ดตรวจสอบสิทธิ์ hasAccess แบบเดียวกับ View) ...
   let hasAccess = false;
   const now = new Date();
   if (roleId === 1) { hasAccess = true; } 
@@ -853,7 +852,7 @@ async downloadFile(companyId: number, fileId: number, userId: number, roleId: nu
       else {
         hasAccess = fileAccesses.some(acc => {
           if (acc.expiresAt && new Date(acc.expiresAt) < now) return false;
-          return (acc.roleId === roleId || acc.userId === userId) && acc.canDownload; // ตรวจสอบ canDownload
+          return (acc.roleId === roleId || acc.userId === userId) && acc.canDownload; 
         });
       }
       if (!hasAccess && file.folderId) { hasAccess = await this.hasFolderAccess(file.folderId, userId, roleId, 'canView'); }
@@ -886,12 +885,13 @@ async downloadFile(companyId: number, fileId: number, userId: number, roleId: nu
 
     const fileHash = crypto.createHash('sha256').update(finalBuffer).digest('hex');
 
+    // 🛡️ ป้องกัน Prisma Type Error ด้วยการครอบ Number() ให้ชัวร์ 100%
     await this.prisma.logDocumentTrace.create({
       data: {
         fileHash: fileHash,
-        company: { connect: { id: companyId } },
-        originalFile: { connect: { id: fileId } },
-        downloadedBy: { connect: { id: userId } }
+        company: { connect: { id: Number(companyId) } },
+        originalFile: { connect: { id: Number(fileId) } },
+        downloadedBy: { connect: { id: Number(userId) } }
       }
     });
 
@@ -901,9 +901,12 @@ async downloadFile(companyId: number, fileId: number, userId: number, roleId: nu
       fileName: file.fileName
     };
   } catch (error: any) {
+    // 🌟 [แก้บั๊ก] ถอดหน้ากาก Error ให้มันฟ้องออกมาตรงๆ ว่าอะไรพัง!
     console.error(`[DownloadFile Error] โหลด URL: ${targetUrl}`, error.message);
     if (error instanceof ForbiddenException) throw error;
-    throw new InternalServerErrorException(`ไม่สามารถดาวน์โหลดไฟล์ได้`);
+    
+    // พ่นสาเหตุที่แท้จริงกลับไปที่หน้าบ้าน (เช่น "Invalid ID", "Network Timeout")
+    throw new InternalServerErrorException(`ดาวน์โหลดไฟล์ไม่สำเร็จ สาเหตุ: ${error.message}`);
   }
 }
 
@@ -994,8 +997,8 @@ async downloadFile(companyId: number, fileId: number, userId: number, roleId: nu
   }
 
 
- // ==========================================
-// 💎 [อัปเดต] ดาวน์โหลดเอกสารต้นฉบับ (รองรับรูปภาพ + PDF แบบไม่ฝังลายน้ำ)
+// ==========================================
+// 💎 [อัปเดต] ดาวน์โหลดเอกสารต้นฉบับ (ถอดหน้ากาก Error)
 // ==========================================
 async downloadOriginalFile(companyId: number, fileId: number, userId: number, roleId: number, isHQ: boolean = false) {
   const file = await this.prisma.docFile.findFirst({
@@ -1005,7 +1008,6 @@ async downloadOriginalFile(companyId: number, fileId: number, userId: number, ro
 
   if (!file) throw new NotFoundException('ไม่พบเอกสาร');
 
-  // ... (โค้ดตรวจสอบสิทธิ์ดาวน์โหลดต้นฉบับแบบเคร่งครัด เหมือนของเดิม) ...
   let hasAccess = false;
   if (roleId === 1) { hasAccess = true; } 
   else if (file.folderId) { hasAccess = await this.hasFolderAccess(file.folderId, userId, roleId, 'canDelete'); } 
@@ -1043,15 +1045,15 @@ async downloadOriginalFile(companyId: number, fileId: number, userId: number, ro
     const originalBuffer = Buffer.from(response.data);
     const mimeType = file.fileExtension || 'application/octet-stream';
 
-    // 🌟 ต้นฉบับไม่ต้องผ่าน applyWatermark แค่คำนวณ Hash เก็บ Audit Log อย่างเดียว
     const fileHash = crypto.createHash('sha256').update(originalBuffer).digest('hex');
 
+    // 🛡️ ป้องกัน Prisma Type Error ด้วยการครอบ Number() ให้ชัวร์ 100%
     await this.prisma.logDocumentTrace.create({
       data: {
         fileHash: fileHash,
-        company: { connect: { id: companyId } },
-        originalFile: { connect: { id: fileId } },
-        downloadedBy: { connect: { id: userId } }
+        company: { connect: { id: Number(companyId) } },
+        originalFile: { connect: { id: Number(fileId) } },
+        downloadedBy: { connect: { id: Number(userId) } }
       }
     });
     
@@ -1061,9 +1063,11 @@ async downloadOriginalFile(companyId: number, fileId: number, userId: number, ro
       fileName: file.fileName
     };
   } catch (error: any) {
+    // 🌟 [แก้บั๊ก] ถอดหน้ากาก Error
     console.error(`[DownloadOriginal Error] โหลด URL: ${targetUrl}`, error.message);
     if (error instanceof ForbiddenException) throw error;
-    throw new InternalServerErrorException(`ไม่สามารถดาวน์โหลดไฟล์ต้นฉบับจาก Cloud ได้`);
+    
+    throw new InternalServerErrorException(`ดาวน์โหลดไฟล์ต้นฉบับไม่สำเร็จ สาเหตุ: ${error.message}`);
   }
 }
 
