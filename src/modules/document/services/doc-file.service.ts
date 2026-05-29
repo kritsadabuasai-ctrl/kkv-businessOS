@@ -746,7 +746,7 @@ async verifyFileIntegrity(companyId: number, fileId: number) {
   }
 
 
-  // ==========================================
+ // ==========================================
   // 📄 [ฟังก์ชันเต็ม] ดูไฟล์ผ่าน Proxy (SharePoint Access Control + ลายน้ำเฉพาะ PDF + Workflow Guard + Tamper-Proof)
   // ==========================================
   async viewFile(companyId: number, fileId: number, userId: number, roleId: number, isHQ: boolean = false) {
@@ -814,6 +814,14 @@ async verifyFileIntegrity(companyId: number, fileId: number) {
       targetUrl = activeVersion.url;
     }
 
+    // 🌟 [CLOUD FIX] สร้าง URL เต็มสำหรับ Google Cloud Storage
+    if (targetUrl && !targetUrl.startsWith('http')) {
+      // ใช้ชื่อ Bucket เดียวกับที่อยู่ใน upload.service.ts
+      const bucketName = process.env.GCS_BUCKET_NAME || 'kkvbusiness_buckets'; 
+      const cleanPath = targetUrl.startsWith('/') ? targetUrl.substring(1) : targetUrl;
+      targetUrl = `https://storage.googleapis.com/${bucketName}/${cleanPath}`;
+    }
+
     try {
       const response = await axios.get(targetUrl, { responseType: 'arraybuffer' });
       let fileBuffer = Buffer.from(response.data);
@@ -843,11 +851,10 @@ async verifyFileIntegrity(companyId: number, fileId: number) {
         fileName: file.fileName
       };
     } catch (error: any) {
-      // 🌟 สั่งปริ้นท์ URL และ Error ของจริงลง Console ของ Backend จะได้รู้ว่าพังที่ลิงก์ไหน
-      console.error(`[File Access Error] URL ที่พยายามโหลด: ${targetUrl}`);
+      console.error(`[ViewFile Error] พยายามโหลด URL: ${targetUrl}`);
       console.error(`รายละเอียด Error: ${error.message}`);
       if (error instanceof ForbiddenException) throw error;
-      throw new InternalServerErrorException('ไม่สามารถดึงข้อมูลไฟล์มาแสดงผลได้');
+      throw new InternalServerErrorException(`ไม่สามารถดึงไฟล์จาก Cloud มาแสดงผลได้ สาเหตุ: ${error.message}`);
     }
   }
 
@@ -916,6 +923,13 @@ async verifyFileIntegrity(companyId: number, fileId: number) {
       targetUrl = activeVersion.url;
     }
 
+    // 🌟 [CLOUD FIX] สร้าง URL เต็มสำหรับ Google Cloud Storage
+    if (targetUrl && !targetUrl.startsWith('http')) {
+      const bucketName = process.env.GCS_BUCKET_NAME || 'kkvbusiness_buckets';
+      const cleanPath = targetUrl.startsWith('/') ? targetUrl.substring(1) : targetUrl;
+      targetUrl = `https://storage.googleapis.com/${bucketName}/${cleanPath}`;
+    }
+
     try {
       const response = await axios.get(targetUrl, { responseType: 'arraybuffer' });
       let fileBuffer = Buffer.from(response.data);
@@ -945,10 +959,10 @@ async verifyFileIntegrity(companyId: number, fileId: number) {
         fileName: file.fileName
       };
     } catch (error: any) {
-      console.error(`[File Access Error] URL ที่พยายามโหลด: ${targetUrl}`);
+      console.error(`[DownloadFile Error] พยายามโหลด URL: ${targetUrl}`);
       console.error(`รายละเอียด Error: ${error.message}`);
       if (error instanceof ForbiddenException) throw error;
-      throw new InternalServerErrorException('ไม่สามารถดาวน์โหลดข้อมูลไฟล์ได้');
+      throw new InternalServerErrorException(`ไม่สามารถดาวน์โหลดข้อมูลไฟล์จาก Cloud ได้ สาเหตุ: ${error.message}`);
     }
   }
 
@@ -1118,6 +1132,13 @@ async verifyFileIntegrity(companyId: number, fileId: number) {
       targetUrl = activeVersion.url;
     }
 
+    // 🌟 [CLOUD FIX] สร้าง URL เต็มสำหรับ Google Cloud Storage
+    if (targetUrl && !targetUrl.startsWith('http')) {
+      const bucketName = process.env.GCS_BUCKET_NAME || 'kkvbusiness_buckets';
+      const cleanPath = targetUrl.startsWith('/') ? targetUrl.substring(1) : targetUrl;
+      targetUrl = `https://storage.googleapis.com/${bucketName}/${cleanPath}`;
+    }
+
     try {
       // 📥 ดึงไฟล์จาก Storage จริง
       const response = await axios.get(targetUrl, { responseType: 'arraybuffer' });
@@ -1142,10 +1163,10 @@ async verifyFileIntegrity(companyId: number, fileId: number) {
         fileName: file.fileName
       };
     } catch (error: any) {
-      console.error(`[File Access Error] URL ที่พยายามโหลด: ${targetUrl}`);
+      console.error(`[DownloadOriginal Error] พยายามโหลด URL: ${targetUrl}`);
       console.error(`รายละเอียด Error: ${error.message}`);
       if (error instanceof ForbiddenException) throw error;
-      throw new InternalServerErrorException('ไม่สามารถดาวน์โหลดไฟล์ต้นฉบับได้');
+      throw new InternalServerErrorException(`ไม่สามารถดาวน์โหลดไฟล์ต้นฉบับจาก Cloud ได้ สาเหตุ: ${error.message}`);
     }
   }
 
