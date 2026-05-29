@@ -1953,6 +1953,29 @@ erDiagram
   DateTime createdAt
   DateTime updatedAt
 }
+"DocSarabanRecord" {
+  Int id PK
+  Int companyId FK
+  Int fileId FK,UK
+  String bookNumber "nullable"
+  String receiveNumber "nullable"
+  DateTime bookDate "nullable"
+  DateTime receiveDate "nullable"
+  String subject
+  String toPerson "nullable"
+  String fromPerson "nullable"
+  String urgencyLevel
+  String secretLevel
+  String bookType
+  String reference "nullable"
+  String attachment "nullable"
+  String remark "nullable"
+  String eDocumentId "nullable"
+  Boolean isSyncedToGov
+  DateTime govSyncDate "nullable"
+  DateTime createdAt
+  DateTime updatedAt
+}
 "doc_file_versions" {
   Int id PK
   Int fileId FK
@@ -2643,7 +2666,7 @@ erDiagram
 "log_document_trace" {
   Int id PK
   Int companyId FK
-  String fileHash UK
+  String fileHash
   Int originalFileId FK
   Int downloadedById FK
   DateTime downloadedAt
@@ -3021,6 +3044,8 @@ erDiagram
 "doc_files" }o--|| "sec_users" : uploadedBy
 "doc_files" |o--o| "int_knowledge_bases" : knowledgeBase
 "doc_files" |o--o| "wf_requests" : wfRequest
+"DocSarabanRecord" }o--|| "org_companies" : company
+"DocSarabanRecord" |o--|| "doc_files" : file
 "doc_file_versions" }o--|| "doc_files" : file
 "doc_file_versions" }o--|| "org_companies" : company
 "doc_file_versions" }o--|| "sec_users" : uploadedBy
@@ -5892,6 +5917,32 @@ Properties as follows:
 - `knowledgeBaseId`:
 - `wfRequestId`: 🔄 จุดเชื่อมต่อกับ Workflow (ล็อกที่ตัวหลัก เพื่อคุมสถานะการแก้ไข)
 - `autoDeleteAt`: 🕒 กำหนดวันหมดอายุของไฟล์ (ถ้ามีค่า CronJob จะลบทิ้งอัตโนมัติ)
+- `createdAt`:
+- `updatedAt`:
+
+### `DocSarabanRecord`
+
+Properties as follows:
+
+- `id`:
+- `companyId`:
+- `fileId`:
+- `bookNumber`:
+- `receiveNumber`:
+- `bookDate`:
+- `receiveDate`:
+- `subject`:
+- `toPerson`:
+- `fromPerson`:
+- `urgencyLevel`:
+- `secretLevel`:
+- `bookType`:
+- `reference`:
+- `attachment`:
+- `remark`:
+- `eDocumentId`:
+- `isSyncedToGov`:
+- `govSyncDate`:
 - `createdAt`:
 - `updatedAt`:
 

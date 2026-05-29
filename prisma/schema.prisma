@@ -294,6 +294,7 @@ model OrgCompany {
   hrwelfareRequestDocument  HrWelfareRequestDocument[]
   evidences                 HrGrievanceEvidence[]
   hrleaverequestdocument    HrLeaveRequestDocument[]
+  docsarabanRecord          DocSarabanRecord[]
 
   productPriceSet       ComProductPriceSet[]
   productImage          ComProductImage[]
@@ -5968,6 +5969,8 @@ model DocFile {
   /// ระดับความความลับ (0-100 ประเมินโดย AI)
   sensitivityScore   Int      @default(0)     
 
+  sarabanRecord   DocSarabanRecord?
+
   /// 💧 Future Feature: Dynamic Watermark
   isWatermarkEnabled Boolean  @default(false)
 
@@ -6008,6 +6011,55 @@ model DocFile {
 
   @@index([companyId, folderId])
   @@map("doc_files")
+}
+
+// 🌟 ตารางสำหรับเก็บข้อมูลสารบรรณอิเล็กทรอนิกส์ (TH e-Saraban)
+model DocSarabanRecord {
+  id              Int        @id @default(autoincrement())
+  
+  // 🏢 ผูก Relation กับ Company (Multi-Tenant Isolation)
+  companyId       Int
+  company         OrgCompany @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  
+  // 📄 ผูก Relation กับไฟล์เอกสาร
+  fileId          Int        @unique // 1 ไฟล์ มีข้อมูลสารบรรณได้ 1 ชุด
+  file            DocFile    @relation(fields: [fileId], references: [id], onDelete: Cascade)
+
+  // 📌 ข้อมูลหลักของหนังสือราชการ
+  bookNumber      String?    // เลขที่หนังสือ (เช่น กค ๐๔๐๒.๑/ว ๑๒๓)
+  receiveNumber   String?    // เลขรับ (กรณีเป็นหนังสือรับเข้า)
+  bookDate        DateTime?  // ลงวันที่ (วันที่บนตัวหนังสือ)
+  receiveDate     DateTime?  // วันที่รับหนังสือเข้าสู่ระบบ
+  subject         String     @db.Text // เรื่อง
+  toPerson        String?    @db.Text // เรียน (ถึงใคร/ตำแหน่งใด)
+  fromPerson      String?    @db.Text // จาก (หน่วยงาน/บุคคลใด)
+
+  // 🚨 ชั้นความเร่งด่วน (NORMAL=ปกติ, URGENT=ด่วน, VERY_URGENT=ด่วนมาก, MOST_URGENT=ด่วนที่สุด)
+  urgencyLevel    String     @default("NORMAL") 
+
+  // 🔒 ชั้นความลับ (NORMAL=ปกติ, SECRET=ลับ, TOP_SECRET=ลับมาก, TOP_SECRET_STRICT=ลับที่สุด)
+  secretLevel     String     @default("NORMAL") 
+
+  // 📂 ชนิดหนังสือ (INTERNAL=หนังสือภายใน, EXTERNAL=หนังสือภายนอก, COMMAND=คำสั่ง/ประกาศ)
+  bookType        String     @default("EXTERNAL") 
+
+  // 📎 ข้อมูลประกอบ
+  reference       String?    @db.Text // อ้างถึง
+  attachment      String?    @db.Text // สิ่งที่ส่งมาด้วย
+  remark          String?    @db.Text // หมายเหตุ
+
+  // 🌐 ฟิลด์สำหรับเชื่อมต่อ TH e-Document API (ระบบกลางภาครัฐ)
+  eDocumentId     String?    // รหัสเอกสารอิเล็กทรอนิกส์อ้างอิงจากระบบภาครัฐ (ถ้ามี)
+  isSyncedToGov   Boolean    @default(false) // เช็กว่าส่งข้อมูลเข้าระบบรัฐสำเร็จหรือยัง
+  govSyncDate     DateTime?  // วันเวลาที่ Sync ข้อมูลสำเร็จ
+
+  createdAt       DateTime   @default(now())
+  updatedAt       DateTime   @updatedAt
+
+  // ⚡ Index เพื่อให้การค้นหาด้วย Smart Search / RAG เร็วขึ้น
+  @@index([companyId])
+  @@index([bookNumber])
+  @@index([receiveNumber])
 }
 
 /// 📑 ตารางเก็บประวัติเวอร์ชันไฟล์ (New)
@@ -7920,7 +7972,7 @@ model LogDocumentTrace {
   companyId       Int
   
   /// รหัส SHA-256 ของไฟล์
-  fileHash        String   @unique 
+  fileHash        String   
   originalFileId  Int
   
   /// ใครเป็นคนกดโหลด/ดูไฟล์นี้

@@ -148,6 +148,7 @@ Table org_companies {
   hrwelfareRequestDocument hr_welfare_request_documents [not null]
   evidences hr_grievance_evidences [not null]
   hrleaverequestdocument hr_leave_request_documents [not null]
+  docsarabanRecord DocSarabanRecord [not null]
   productPriceSet com_product_price_sets [not null]
   productImage com_product_images [not null]
   comTag com_tags [not null]
@@ -1581,7 +1582,7 @@ Table com_product_images {
   parent com_product_images
   children com_product_images [not null]
   url String [not null, note: 'ที่อยู่เต็มของไฟล์สำหรับเรียกใช้งาน']
-  variantId Int [note: '(Option) เชื่อมรูปภาพเข้ากับ รุ่นย่อยของสินค้า (Variant) เช่น รูปนี้สำหรับเสื้อสีแดงเท่านั้น']
+  variantId Int [note: '(Option) เชื่อมรูปภาพเข้ากับ รุ่นย่���ยของสินค้า (Variant) เช่น รูปนี้สำหรับเสื้อสีแดงเท่านั้น']
   variant com_products
   displayName String [note: 'ชื่อสำหรับแสดงผล (ตั้งเองได้)']
   fileId String [note: 'ไอดีเฉพาะของไฟล์จากระบบจัดเก็บ (เช่น ID จาก Google Drive)']
@@ -2762,7 +2763,7 @@ Table cfg_rounding_ranges {
   result Decimal [not null, note: 'ค่าที่จะให้นำไปใช้หลังจากผ่านเงื่อนไขในช่วงนี้']
   sortOrder Int [not null, default: 0, note: 'ลำดับการตรวจสอบข้อมูล (ใช้ในกรณีที่มีช่วงข้อมูลซ้อนทับกัน เพื่อระบุว่าจะให้เช็คเงื่อนไขใดก่อน)']
 
-  Note: 'ทำหน้าที่เก็บ รายละเอียดเงื่อนไขในช่วงตัวเลข (Range Logic) เพื่อกำหนดว่าถ้าตัวเลขตกอยู่ในช่วงที่ระบุ จะให้ปัดเศษเป็นค่าใด โดยทำงานเป็นตารางลูก (Child Table) ที่เชื่อมโยงกับ CfgRoundingRule เพื่อให้การปัดเศษมีความยืดหยุ่นสูงมาก เช่น การปัดเศษสตางค์แบบขั้นบันได'
+  Note: 'ทำหน้าที่เก็บ รายละเอียดเงื่อนไขในช่วงตัวเลข (Range Logic) เพื่อกำหนดว่าถ้าตัวเลขตกอยู่ในช่วงที่ระบุ จะให้ปัดเศษเป็นค่าใด โดยทำงานเป็นตารางลูก (Child Table) ที่เชื่อมโยงกับ CfgRoundingRule เพื่อให้การปัดเศษมีความยืดหยุ่นสูงมาก เช่น การปัด���ศษสตางค์แบบขั้นบันได'
 }
 
 Table hr_leave_types {
@@ -3482,6 +3483,7 @@ Table doc_files {
   currentUrl String [not null, note: 'ลิงก์ GCS ของเวอร์ชันล่าสุด    ']
   isSensitiveData Boolean [not null, default: false, note: '🚨 Future Feature: Data Loss Prevention (DLP) มีเลขบัตร ปชช, บัตรเครดิต หรือไม่']
   sensitivityScore Int [not null, default: 0, note: 'ระดับความความลับ (0-100 ประเมินโดย AI)']
+  sarabanRecord DocSarabanRecord
   isWatermarkEnabled Boolean [not null, default: false, note: '💧 Future Feature: Dynamic Watermark']
   sourceArchiveId Int
   sourceArchive doc_files
@@ -3505,6 +3507,32 @@ Table doc_files {
   updatedAt DateTime [not null]
 
   Note: '📂 ตารางหลักของไฟล์ (ปรับปรุงให้เป็น Parent ของ Versions)'
+}
+
+Table DocSarabanRecord {
+  id Int [pk, increment]
+  companyId Int [not null]
+  company org_companies [not null]
+  fileId Int [unique, not null]
+  file doc_files [not null]
+  bookNumber String
+  receiveNumber String
+  bookDate DateTime
+  receiveDate DateTime
+  subject String [not null]
+  toPerson String
+  fromPerson String
+  urgencyLevel String [not null, default: 'NORMAL']
+  secretLevel String [not null, default: 'NORMAL']
+  bookType String [not null, default: 'EXTERNAL']
+  reference String
+  attachment String
+  remark String
+  eDocumentId String
+  isSyncedToGov Boolean [not null, default: false]
+  govSyncDate DateTime
+  createdAt DateTime [default: `now()`, not null]
+  updatedAt DateTime [not null]
 }
 
 Table doc_file_versions {
@@ -4640,7 +4668,7 @@ Table int_marketplace_products {
 Table log_document_trace {
   id Int [pk, increment]
   companyId Int [not null]
-  fileHash String [unique, not null, note: 'รหัส SHA-256 ของไฟล์']
+  fileHash String [not null, note: 'รหัส SHA-256 ของไฟล์']
   originalFileId Int [not null]
   downloadedById Int [not null, note: 'ใครเป็นคนกดโหลด/ดูไฟล์นี้']
   downloadedAt DateTime [default: `now()`, not null]
@@ -5803,6 +5831,10 @@ Ref: doc_files.uploadedById > sec_users.id
 Ref: doc_files.knowledgeBaseId - int_knowledge_bases.id
 
 Ref: doc_files.wfRequestId - wf_requests.id
+
+Ref: DocSarabanRecord.companyId > org_companies.id [delete: Cascade]
+
+Ref: DocSarabanRecord.fileId - doc_files.id [delete: Cascade]
 
 Ref: doc_file_versions.fileId > doc_files.id [delete: Cascade]
 
