@@ -747,223 +747,165 @@ async verifyFileIntegrity(companyId: number, fileId: number) {
 
 
  // ==========================================
-  // 📄 [ฟังก์ชันเต็ม] ดูไฟล์ผ่าน Proxy (SharePoint Access Control + ลายน้ำเฉพาะ PDF + Workflow Guard + Tamper-Proof)
-  // ==========================================
-  async viewFile(companyId: number, fileId: number, userId: number, roleId: number) { // 🌟 นำ isHQ ออก
-    // 🌟 [UPDATE] ดึงไฟล์พร้อมข้อมูลโฟลเดอร์, workflow, และประวัติเวอร์ชันทั้งหมดเพื่อใช้คุมสิทธิ์
-    const file = await this.prisma.docFile.findFirst({
-      where: { id: fileId, companyId },
-      include: { 
-        folder: true,
-        wfRequest: true,
-        versions: { orderBy: { version: 'desc' } }
-      }
-    });
+// 📄 [อัปเดต] ดูไฟล์ผ่าน Proxy (รองรับรูปภาพ + PDF ลายน้ำ)
+// ==========================================
+async viewFile(companyId: number, fileId: number, userId: number, roleId: number, isHQ: boolean = false) {
+  const file = await this.prisma.docFile.findFirst({
+    where: { id: fileId, companyId },
+    include: { folder: true, wfRequest: true, versions: { orderBy: { version: 'desc' } } }
+  });
 
-    if (!file) throw new NotFoundException('ไม่พบเอกสาร');
+  if (!file) throw new NotFoundException('ไม่พบเอกสาร');
 
-    let hasAccess = false;
-    const now = new Date();
-
-    // 👑 กฎการเข้าถึงระดับสถาปัตยกรรมองค์กร (Base Access Check)
-    if (roleId === 1) {
-      hasAccess = true;
-    } else if (file.folder?.isWorkspace) {
-      hasAccess = await this.hasFolderAccess(file.folderId, userId, roleId, 'canView');
-    } else {
-      if (file.uploadedById === userId) {
-        hasAccess = true;
-      } else {
-        const fileAccesses = await this.prisma.docFileAccess.findMany({
-          where: { fileId, companyId }
+  // ... (โค้ดตรวจสอบสิทธิ์ hasAccess และ hasDraftAccess คงเดิม) ...
+  let hasAccess = false;
+  const now = new Date();
+  if (roleId === 1) { hasAccess = true; } 
+  else if (file.folder?.isWorkspace) { hasAccess = await this.hasFolderAccess(file.folderId, userId, roleId, 'canView'); } 
+  else {
+    if (file.uploadedById === userId) { hasAccess = true; } 
+    else {
+      const fileAccesses = await this.prisma.docFileAccess.findMany({ where: { fileId, companyId } });
+      if (fileAccesses.length === 0) { hasAccess = true; } 
+      else {
+        hasAccess = fileAccesses.some(acc => {
+          if (acc.expiresAt && new Date(acc.expiresAt) < now) return false;
+          return (acc.roleId === roleId || acc.userId === userId) && acc.canView;
         });
-
-        if (fileAccesses.length === 0) {
-          hasAccess = true; 
-        } else {
-          hasAccess = fileAccesses.some(acc => {
-            if (acc.expiresAt && new Date(acc.expiresAt) < now) return false;
-            return (acc.roleId === roleId || acc.userId === userId) && acc.canView;
-          });
-        }
-
-        if (!hasAccess && file.folderId) {
-          hasAccess = await this.hasFolderAccess(file.folderId, userId, roleId, 'canView');
-        }
       }
+      if (!hasAccess && file.folderId) { hasAccess = await this.hasFolderAccess(file.folderId, userId, roleId, 'canView'); }
     }
+  }
 
-    if (!hasAccess) {
-      throw new ForbiddenException('คุณไม่มีสิทธิ์เข้าถึงเอกสารนี้ (สิทธิ์ใน Workspace ของคุณถูกระงับหรือสิ้นสุดลงแล้ว)');
-    }
+  if (!hasAccess) throw new ForbiddenException('คุณไม่มีสิทธิ์เข้าถึงเอกสารนี้');
 
-    // 🌟 [NEW GUARD] ตรวจสอบสิทธิ์การเข้าถึงไฟล์ฉบับร่าง/ระหว่างอนุมัติ (Workflow Context Guard)
-    const canAccessDraft = await this.hasDraftAccess(file, userId, roleId, false); // 🌟 เปลี่ยน isHQ เป็น false
-    let targetUrl = file.currentUrl;
+  const canAccessDraft = await this.hasDraftAccess(file, userId, roleId, isHQ);
+  let targetUrl = file.currentUrl;
 
-    if (!canAccessDraft) {
-      // 🔴 คนทั่วไปไม่มีสิทธิ์ดูไฟล์ร่าง -> ค้นหาเวอร์ชันที่ใช้งานจริงปัจจุบัน (isCurrent === true)
-      const activeVersion = file.versions?.find(v => v.isCurrent === true);
-      
-      // เคสที่ 1: เป็นไฟล์สร้างใหม่ซิงๆ (V1 ค้างสเตตัส Workflow) -> บล็อกห้ามเข้าดูเด็ดขาด
-      if (!activeVersion) {
-        throw new ForbiddenException('เอกสารนี้อยู่ระหว่างกระบวนการตรวจสอบและอนุมัติครั้งแรก ผู้ใช้ทั่วไปยังไม่สามารถเข้าถึงได้');
-      }
-      
-      // เคสที่ 2: V1 อนุมัติแล้ว แต่ V2 ค้างคิวอยู่ -> สลับลิงก์เสิร์ฟเวอร์ชัน V1 ให้ดูแทนอย่างปลอดภัย
-      targetUrl = activeVersion.url;
-    }
+  if (!canAccessDraft) {
+    const activeVersion = file.versions?.find(v => v.isCurrent === true);
+    if (!activeVersion) throw new ForbiddenException('เอกสารนี้อยู่ระหว่างการตรวจสอบและอนุมัติ');
+    targetUrl = activeVersion.url;
+  }
 
-    // 🌟 [CLOUD FIX] สร้าง URL เต็มสำหรับ Google Cloud Storage
-    if (targetUrl && !targetUrl.startsWith('http')) {
-      // ใช้ชื่อ Bucket เดียวกับที่อยู่ใน upload.service.ts
-      const bucketName = process.env.GCS_BUCKET_NAME || 'kkvbusiness_buckets'; 
-      const cleanPath = targetUrl.startsWith('/') ? targetUrl.substring(1) : targetUrl;
-      targetUrl = `https://storage.googleapis.com/${bucketName}/${cleanPath}`;
-    }
+  // 🌟 [ลบ CLOUD FIX ออก] เพราะระบบเก็บ URL เต็ม (https://storage...) ไว้ใน DB อยู่แล้ว
 
-    try {
-      const response = await axios.get(targetUrl, { responseType: 'arraybuffer' });
-      let fileBuffer = Buffer.from(response.data);
-      let mimeType = file.fileExtension || 'application/octet-stream';
+  try {
+    const response = await axios.get(targetUrl, { responseType: 'arraybuffer' });
+    let fileBuffer = Buffer.from(response.data);
+    let mimeType = file.fileExtension || 'application/octet-stream';
+    let finalBuffer = fileBuffer;
 
+    // 🌟 1. ดักว่าถ้าเป็น PDF ค่อยเข้ากระบวนการ Watermark (ถ้าเป็นรูปภาพจะข้ามตรงนี้ไปเลย)
+    if (mimeType.toLowerCase().includes('pdf')) {
       const timestamp = new Date().toLocaleString('en-GB');
       const watermarkText = `CONFIDENTIAL  |  User ID: ${userId}  |  Date: ${timestamp}`;
       const processedFileBytes = await this.applyWatermark(fileBuffer, mimeType, watermarkText, userId);
-
-      // 🛡️ [TAMPER-PROOF] แปลงเป็น Buffer และคำนวณ SHA-256 Hash
-      const finalBuffer = Buffer.from(processedFileBytes);
-      const fileHash = crypto.createHash('sha256').update(finalBuffer).digest('hex');
-
-      await this.prisma.logDocumentTrace.create({
-        data: {
-                fileHash: fileHash,
-                companyId: companyId, // 🌟 แก้ไข: ใช้ ID ตรงๆ 
-                originalFileId: fileId, // 🌟 แก้ไข: ใช้ ID ตรงๆ
-                downloadedById: userId // 🌟 แก้ไข: ใช้ ID ตรงๆ
-              }
-        });
-
-      return {
-        fileStream: new StreamableFile(finalBuffer),
-        mimeType: mimeType,
-        fileName: file.fileName
-      };
-    } catch (error: any) {
-      console.error(`[ViewFile Error] พยายามโหลด URL: ${targetUrl}`);
-      console.error(`รายละเอียด Error: ${error.message}`);
-      if (error instanceof ForbiddenException) throw error;
-      throw new InternalServerErrorException(`ไม่สามารถดึงไฟล์จาก Cloud มาแสดงผลได้ สาเหตุ: ${error.message}`);
+      finalBuffer = Buffer.from(processedFileBytes);
     }
-  }
 
- // ==========================================
-  // 📥 [ฟังก์ชันเต็ม] ดาวน์โหลดไฟล์ (SharePoint Access Control + ลายน้ำสำหรับ PDF + Workflow Guard + Tamper-Proof)
-  // ==========================================
-  async downloadFile(companyId: number, fileId: number, userId: number, roleId: number) { // 🌟 นำ isHQ ออก
-    // 🌟 [UPDATE] ดึงไฟล์พร้อมข้อมูลโฟลเดอร์, workflow, และประวัติเวอร์ชันทั้งหมดเพื่อใช้คุมสิทธิ์
-    const file = await this.prisma.docFile.findFirst({
-      where: { id: fileId, companyId },
-      include: { 
-        folder: true,
-        wfRequest: true,
-        versions: { orderBy: { version: 'desc' } }
+    // 🌟 2. คำนวณ Hash เพื่อใช้เป็น Tamper-Proof
+    const fileHash = crypto.createHash('sha256').update(finalBuffer).digest('hex');
+
+    // 🌟 3. บันทึกประวัติการดูไฟล์
+    await this.prisma.logDocumentTrace.create({
+      data: {
+        fileHash: fileHash,
+        company: { connect: { id: companyId } },
+        originalFile: { connect: { id: fileId } },
+        downloadedBy: { connect: { id: userId } }
       }
     });
 
-    if (!file) throw new NotFoundException('ไม่พบเอกสาร');
+    return {
+      fileStream: new StreamableFile(finalBuffer),
+      mimeType: mimeType,
+      fileName: file.fileName
+    };
+  } catch (error: any) {
+    console.error(`[ViewFile Error] โหลด URL: ${targetUrl}`, error.message);
+    if (error instanceof ForbiddenException) throw error;
+    throw new InternalServerErrorException(`ไม่สามารถดึงไฟล์จาก Cloud มาแสดงผลได้`);
+  }
+}
 
-    let hasAccess = false;
-    const now = new Date();
+// ==========================================
+// 📥 [อัปเดต] ดาวน์โหลดไฟล์ (รองรับรูปภาพ + PDF ลายน้ำ)
+// ==========================================
+async downloadFile(companyId: number, fileId: number, userId: number, roleId: number, isHQ: boolean = false) {
+  const file = await this.prisma.docFile.findFirst({
+    where: { id: fileId, companyId },
+    include: { folder: true, wfRequest: true, versions: { orderBy: { version: 'desc' } } }
+  });
 
-    // 👑 กฎการเข้าถึงระดับสถาปัตยกรรมองค์กร (Base Access Check)
-    if (roleId === 1) {
-      hasAccess = true; 
-    } else if (file.folder?.isWorkspace) {
-      hasAccess = await this.hasFolderAccess(file.folderId, userId, roleId, 'canView');
-    } else {
-      if (file.uploadedById === userId) {
-        hasAccess = true;
-      } else {
-        const fileAccesses = await this.prisma.docFileAccess.findMany({
-          where: { fileId, companyId }
+  if (!file) throw new NotFoundException('ไม่พบเอกสาร');
+
+  // ... (โค้ดตรวจสอบสิทธิ์ hasAccess แบบเดียวกับ View) ...
+  let hasAccess = false;
+  const now = new Date();
+  if (roleId === 1) { hasAccess = true; } 
+  else if (file.folder?.isWorkspace) { hasAccess = await this.hasFolderAccess(file.folderId, userId, roleId, 'canView'); } 
+  else {
+    if (file.uploadedById === userId) { hasAccess = true; } 
+    else {
+      const fileAccesses = await this.prisma.docFileAccess.findMany({ where: { fileId, companyId } });
+      if (fileAccesses.length === 0) { hasAccess = true; } 
+      else {
+        hasAccess = fileAccesses.some(acc => {
+          if (acc.expiresAt && new Date(acc.expiresAt) < now) return false;
+          return (acc.roleId === roleId || acc.userId === userId) && acc.canDownload; // ตรวจสอบ canDownload
         });
-
-        if (fileAccesses.length === 0) {
-          hasAccess = true;
-        } else {
-          hasAccess = fileAccesses.some(acc => {
-            if (acc.expiresAt && new Date(acc.expiresAt) < now) return false;
-            return (acc.roleId === roleId || acc.userId === userId) && acc.canDownload; 
-          });
-        }
-
-        if (!hasAccess && file.folderId) {
-          hasAccess = await this.hasFolderAccess(file.folderId, userId, roleId, 'canView');
-        }
       }
+      if (!hasAccess && file.folderId) { hasAccess = await this.hasFolderAccess(file.folderId, userId, roleId, 'canView'); }
     }
+  }
 
-    if (!hasAccess) throw new ForbiddenException('คุณไม่มีสิทธิ์ดาวน์โหลดเอกสารนี้ (สิทธิ์ใน Workspace ของคุณถูกระงับหรือสิ้นสุดลงแล้ว)');
+  if (!hasAccess) throw new ForbiddenException('คุณไม่มีสิทธิ์ดาวน์โหลดเอกสารนี้');
 
-    // 🌟 [NEW GUARD] ตรวจสอบสิทธิ์การเข้าถึงไฟล์ฉบับร่าง/ระหว่างอนุมัติ (Workflow Context Guard)
-    const canAccessDraft = await this.hasDraftAccess(file, userId, roleId, false); // 🌟 เปลี่ยน isHQ เป็น false
-    let targetUrl = file.currentUrl;
+  const canAccessDraft = await this.hasDraftAccess(file, userId, roleId, isHQ);
+  let targetUrl = file.currentUrl;
 
-    if (!canAccessDraft) {
-      // 🔴 คนทั่วไปไม่มีสิทธิ์โหลดไฟล์ร่าง -> ค้นหาเวอร์ชันที่ใช้งานจริงปัจจุบัน (isCurrent === true)
-      const activeVersion = file.versions?.find(v => v.isCurrent === true);
-      
-      if (!activeVersion) {
-        throw new ForbiddenException('เอกสารนี้อยู่ระหว่างกระบวนการตรวจสอบและอนุมัติครั้งแรก ผู้ใช้ทั่วไปยังไม่สามารถดาวน์โหลดได้');
-      }
-      
-      // สลับลิงก์เสิร์ฟเวอร์ชัน V1 ที่เสถียรให้ดาวน์โหลดแทน
-      targetUrl = activeVersion.url;
-    }
+  if (!canAccessDraft) {
+    const activeVersion = file.versions?.find(v => v.isCurrent === true);
+    if (!activeVersion) throw new ForbiddenException('เอกสารนี้อยู่ระหว่างการตรวจสอบและอนุมัติ');
+    targetUrl = activeVersion.url;
+  }
 
-    // 🌟 [CLOUD FIX] สร้าง URL เต็มสำหรับ Google Cloud Storage
-    if (targetUrl && !targetUrl.startsWith('http')) {
-      const bucketName = process.env.GCS_BUCKET_NAME || 'kkvbusiness_buckets';
-      const cleanPath = targetUrl.startsWith('/') ? targetUrl.substring(1) : targetUrl;
-      targetUrl = `https://storage.googleapis.com/${bucketName}/${cleanPath}`;
-    }
+  try {
+    const response = await axios.get(targetUrl, { responseType: 'arraybuffer' });
+    let fileBuffer = Buffer.from(response.data);
+    let mimeType = file.fileExtension || 'application/octet-stream';
+    let finalBuffer = fileBuffer;
 
-    try {
-      const response = await axios.get(targetUrl, { responseType: 'arraybuffer' });
-      let fileBuffer = Buffer.from(response.data);
-      let mimeType = file.fileExtension || 'application/octet-stream';
-
+    if (mimeType.toLowerCase().includes('pdf')) {
       const timestamp = new Date().toLocaleString('en-GB');
       const watermarkText = `RESTRICTED COPY - DOWNLOADED  |  User ID: ${userId}  |  Date: ${timestamp}`;
       const processedFileBytes = await this.applyWatermark(fileBuffer, mimeType, watermarkText, userId);
-
-      // 🛡️ [TAMPER-PROOF] แปลงเป็น Buffer และคำนวณ SHA-256 Hash
-      const finalBuffer = Buffer.from(processedFileBytes);
-      const fileHash = crypto.createHash('sha256').update(finalBuffer).digest('hex');
-
-      // 📝 บันทึกประวัติลายนิ้วมือดิจิทัลของไฟล์ฉบับนี้ลงระบบ
-      await this.prisma.logDocumentTrace.create({
-        data: {
-                fileHash: fileHash,
-                companyId: companyId, // 🌟 แก้ไข: ใช้ ID ตรงๆ 
-                originalFileId: fileId, // 🌟 แก้ไข: ใช้ ID ตรงๆ
-                downloadedById: userId // 🌟 แก้ไข: ใช้ ID ตรงๆ
-              }
-        });
-
-      return {
-        fileStream: new StreamableFile(finalBuffer),
-        mimeType: mimeType,
-        fileName: file.fileName
-      };
-    } catch (error: any) {
-      console.error(`[DownloadFile Error] พยายามโหลด URL: ${targetUrl}`);
-      console.error(`รายละเอียด Error: ${error.message}`);
-      if (error instanceof ForbiddenException) throw error;
-      throw new InternalServerErrorException(`ไม่สามารถดาวน์โหลดข้อมูลไฟล์จาก Cloud ได้ สาเหตุ: ${error.message}`);
+      finalBuffer = Buffer.from(processedFileBytes);
     }
+
+    const fileHash = crypto.createHash('sha256').update(finalBuffer).digest('hex');
+
+    await this.prisma.logDocumentTrace.create({
+      data: {
+        fileHash: fileHash,
+        company: { connect: { id: companyId } },
+        originalFile: { connect: { id: fileId } },
+        downloadedBy: { connect: { id: userId } }
+      }
+    });
+
+    return {
+      fileStream: new StreamableFile(finalBuffer),
+      mimeType: mimeType,
+      fileName: file.fileName
+    };
+  } catch (error: any) {
+    console.error(`[DownloadFile Error] โหลด URL: ${targetUrl}`, error.message);
+    if (error instanceof ForbiddenException) throw error;
+    throw new InternalServerErrorException(`ไม่สามารถดาวน์โหลดไฟล์ได้`);
   }
+}
 
 // ==========================================
   // 🌟 [อัปเดต] ฟังก์ชันยิง Workflow ขอสิทธิ์เข้าถึง (รองรับทั้ง View และขอ RAW_FILE)
@@ -1052,122 +994,78 @@ async verifyFileIntegrity(companyId: number, fileId: number) {
   }
 
 
-  // ==========================================
-  // 💎 [ฟังก์ชันเต็ม] ดาวน์โหลดเอกสารต้นฉบับแบบไม่มีลายน้ำ (Strict Folder Guard + Workflow Access + Tamper-Proof)
-  // ==========================================
-  async downloadOriginalFile(companyId: number, fileId: number, userId: number, roleId: number) { // 🌟 นำ isHQ ออก
-    const file = await this.prisma.docFile.findFirst({
-      where: { id: fileId, companyId },
-      include: { 
-        folder: true,
-        wfRequest: true,
-        versions: { orderBy: { version: 'desc' } }
-      }
+ // ==========================================
+// 💎 [อัปเดต] ดาวน์โหลดเอกสารต้นฉบับ (รองรับรูปภาพ + PDF แบบไม่ฝังลายน้ำ)
+// ==========================================
+async downloadOriginalFile(companyId: number, fileId: number, userId: number, roleId: number, isHQ: boolean = false) {
+  const file = await this.prisma.docFile.findFirst({
+    where: { id: fileId, companyId },
+    include: { folder: true, wfRequest: true, versions: { orderBy: { version: 'desc' } } }
+  });
+
+  if (!file) throw new NotFoundException('ไม่พบเอกสาร');
+
+  // ... (โค้ดตรวจสอบสิทธิ์ดาวน์โหลดต้นฉบับแบบเคร่งครัด เหมือนของเดิม) ...
+  let hasAccess = false;
+  if (roleId === 1) { hasAccess = true; } 
+  else if (file.folderId) { hasAccess = await this.hasFolderAccess(file.folderId, userId, roleId, 'canDelete'); } 
+  else if (!file.folderId && file.uploadedById === userId) { hasAccess = true; }
+
+  if (!hasAccess) {
+    const approvedRequest = await this.prisma.docAccessRequest.findFirst({
+      where: { companyId, requesterId: userId, targetType: 'FILE', targetId: fileId, status: 'APPROVED' },
+      include: { wfRequest: true },
+      orderBy: { updatedAt: 'desc' }
     });
-
-    if (!file) throw new NotFoundException('ไม่พบเอกสาร');
-
-    let hasAccess = false;
-
-    // --- 🛡️ ด่านที่ 1: ตรวจสอบสิทธิ์ระดับผู้จัดการแฟ้ม (Strict Folder Guard) ---
-    if (roleId === 1) {
-      hasAccess = true; 
-    } else if (file.folderId) {
-      // 🚨 บังคับเช็กสิทธิ์ canDelete จากโฟลเดอร์แม่เท่านั้น (ตัดสิทธิ์คนอัปโหลด)
-      hasAccess = await this.hasFolderAccess(file.folderId, userId, roleId, 'canDelete');
-    } else if (!file.folderId && file.uploadedById === userId) {
-      // 🌟 ข้อยกเว้น: ไฟล์ที่ยังลอยอยู่หน้า Root (ยังไม่จัดเก็บ) ยอมให้คนอัปโหลดโหลดไฟล์ตัวเองได้
-      hasAccess = true;
-    }
-
-    // --- 🛡️ ด่านที่ 2: ตรวจสอบสิทธิ์จากการขออนุมัติผ่านระบบ (Workflow Access Request) ---
-    // สำหรับ Staff ทั่วไปที่ไม่มีสิทธิ์ canDelete แต่ได้รับอนุมัติให้โหลดไฟล์ต้นฉบับได้ชั่วคราว
-    if (!hasAccess) {
-      const approvedRequest = await this.prisma.docAccessRequest.findFirst({
-        where: {
-          companyId,
-          requesterId: userId,
-          targetType: 'FILE',
-          targetId: fileId,
-          status: 'APPROVED'
-        },
-        include: { wfRequest: true },
-        orderBy: { updatedAt: 'desc' } // เอาคำขอล่าสุดที่ได้รับการอนุมัติ
-      });
-
-      if (approvedRequest) {
-        // 🔍 เช็กว่าเป็นคำขอแบบ "ต้นฉบับ" หรือไม่ (ตรวจสอบจาก Topic ของ Workflow หรือถ้าในอนาคตมีฟิลด์ accessType ก็ดักได้เลย)
-        const isRawRequest = approvedRequest.wfRequest?.topic?.includes('ต้นฉบับ') || 
-                     (approvedRequest as any).accessType === 'RAW_FILE';
-
-        if (isRawRequest) {
-          // ⏱️ คำนวณเวลาหมดอายุสิทธิ์ (นับจากวันที่อนุมัติ updatedAt + durationDays)
-          const expireDate = new Date(approvedRequest.updatedAt);
-          expireDate.setDate(expireDate.getDate() + (approvedRequest.durationDays || 1));
-
-          if (new Date() <= expireDate) {
-            hasAccess = true; // ✅ อนุมัติให้โหลดได้เพราะ Workflow ผ่านและยังไม่หมดเวลา
-          }
-        }
+    if (approvedRequest) {
+      const isRawRequest = approvedRequest.wfRequest?.topic?.includes('ต้นฉบับ') || (approvedRequest as any).accessType === 'RAW_FILE';
+      if (isRawRequest) {
+        const expireDate = new Date(approvedRequest.updatedAt);
+        expireDate.setDate(expireDate.getDate() + (approvedRequest.durationDays || 1));
+        if (new Date() <= expireDate) { hasAccess = true; }
       }
-    }
-
-    // 🚨 ถ้าไม่ผ่านทั้งผู้จัดการแฟ้ม และไม่มีสิทธิ์จาก Workflow ให้เตะออกทันที
-    if (!hasAccess) {
-      throw new ForbiddenException('สงวนสิทธิ์การดาวน์โหลดไฟล์ต้นฉบับเฉพาะผู้จัดการแฟ้ม หรือผู้ที่ได้รับอนุมัติผ่านระบบขอสิทธิ์ (Workflow) เท่านั้น');
-    }
-
-    // --- 🛡️ ด่านที่ 3: เช็กสิทธิ์เข้าถึงไฟล์ร่าง/รออนุมัติ (Workflow Context Guard) ---
-    const canAccessDraft = await this.hasDraftAccess(file, userId, roleId, false); // 🌟 เปลี่ยน isHQ เป็น false
-    let targetUrl = file.currentUrl;
-
-    if (!canAccessDraft) {
-      const activeVersion = file.versions?.find(v => v.isCurrent === true);
-      
-      if (!activeVersion) {
-        throw new ForbiddenException('เอกสารนี้อยู่ระหว่างกระบวนการตรวจสอบและอนุมัติครั้งแรก ผู้ใช้ทั่วไปยังไม่สามารถเข้าถึงได้');
-      }
-      
-      targetUrl = activeVersion.url;
-    }
-
-    // 🌟 [CLOUD FIX] สร้าง URL เต็มสำหรับ Google Cloud Storage
-    if (targetUrl && !targetUrl.startsWith('http')) {
-      const bucketName = process.env.GCS_BUCKET_NAME || 'kkvbusiness_buckets';
-      const cleanPath = targetUrl.startsWith('/') ? targetUrl.substring(1) : targetUrl;
-      targetUrl = `https://storage.googleapis.com/${bucketName}/${cleanPath}`;
-    }
-
-    try {
-      // 📥 ดึงไฟล์จาก Storage จริง
-      const response = await axios.get(targetUrl, { responseType: 'arraybuffer' });
-      const originalBuffer = Buffer.from(response.data);
-
-      // 🛡️ [TAMPER-PROOF] คำนวณ SHA-256 Hash ของไฟล์ต้นฉบับ
-      const fileHash = crypto.createHash('sha256').update(originalBuffer).digest('hex');
-
-      // 📝 บันทึกประวัติว่าใครโหลดไฟล์ "ต้นฉบับ" (Hash นี้) ออกไป เพื่อใช้ในระบบ Audit Log
-      await this.prisma.logDocumentTrace.create({
-        data: {
-                fileHash: fileHash,
-                companyId: companyId, // 🌟 แก้ไข: ใช้ ID ตรงๆ 
-                originalFileId: fileId, // 🌟 แก้ไข: ใช้ ID ตรงๆ
-                downloadedById: userId // 🌟 แก้ไข: ใช้ ID ตรงๆ
-              }
-        });
-      
-      return {
-        fileStream: new StreamableFile(originalBuffer),
-        mimeType: file.fileExtension || 'application/octet-stream',
-        fileName: file.fileName
-      };
-    } catch (error: any) {
-      console.error(`[DownloadOriginal Error] พยายามโหลด URL: ${targetUrl}`);
-      console.error(`รายละเอียด Error: ${error.message}`);
-      if (error instanceof ForbiddenException) throw error;
-      throw new InternalServerErrorException(`ไม่สามารถดาวน์โหลดไฟล์ต้นฉบับจาก Cloud ได้ สาเหตุ: ${error.message}`);
     }
   }
+
+  if (!hasAccess) throw new ForbiddenException('สงวนสิทธิ์การดาวน์โหลดไฟล์ต้นฉบับเฉพาะผู้จัดการแฟ้ม หรือผู้ที่ได้รับอนุมัติผ่านระบบขอสิทธิ์ (Workflow) เท่านั้น');
+
+  const canAccessDraft = await this.hasDraftAccess(file, userId, roleId, isHQ);
+  let targetUrl = file.currentUrl;
+
+  if (!canAccessDraft) {
+    const activeVersion = file.versions?.find(v => v.isCurrent === true);
+    if (!activeVersion) throw new ForbiddenException('เอกสารนี้อยู่ระหว่างการตรวจสอบและอนุมัติ');
+    targetUrl = activeVersion.url;
+  }
+
+  try {
+    const response = await axios.get(targetUrl, { responseType: 'arraybuffer' });
+    const originalBuffer = Buffer.from(response.data);
+    const mimeType = file.fileExtension || 'application/octet-stream';
+
+    // 🌟 ต้นฉบับไม่ต้องผ่าน applyWatermark แค่คำนวณ Hash เก็บ Audit Log อย่างเดียว
+    const fileHash = crypto.createHash('sha256').update(originalBuffer).digest('hex');
+
+    await this.prisma.logDocumentTrace.create({
+      data: {
+        fileHash: fileHash,
+        company: { connect: { id: companyId } },
+        originalFile: { connect: { id: fileId } },
+        downloadedBy: { connect: { id: userId } }
+      }
+    });
+    
+    return {
+      fileStream: new StreamableFile(originalBuffer),
+      mimeType: mimeType,
+      fileName: file.fileName
+    };
+  } catch (error: any) {
+    console.error(`[DownloadOriginal Error] โหลด URL: ${targetUrl}`, error.message);
+    if (error instanceof ForbiddenException) throw error;
+    throw new InternalServerErrorException(`ไม่สามารถดาวน์โหลดไฟล์ต้นฉบับจาก Cloud ได้`);
+  }
+}
 
 
   // ==========================================
