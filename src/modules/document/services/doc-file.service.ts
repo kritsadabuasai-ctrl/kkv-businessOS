@@ -835,15 +835,14 @@ async verifyFileIntegrity(companyId: number, fileId: number) {
       const finalBuffer = Buffer.from(processedFileBytes);
       const fileHash = crypto.createHash('sha256').update(finalBuffer).digest('hex');
 
-      // 📝 บันทึกประวัติลายนิ้วมือดิจิทัลของไฟล์ฉบับนี้ลงระบบ
       await this.prisma.logDocumentTrace.create({
         data: {
-          companyId,
-          fileHash,
-          originalFileId: fileId,
-          downloadedById: userId,
-        }
-      });
+                fileHash: fileHash,
+                company: { connect: { id: companyId } },
+                originalFile: { connect: { id: fileId } },
+                downloadedBy: { connect: { id: userId } } // 👈 ใส่ตรงๆ แบบนี้เลย ไม่ต้องมีเงื่อนไข if ครอบครับ
+              }
+        });
 
       return {
         fileStream: new StreamableFile(finalBuffer),
@@ -946,12 +945,12 @@ async verifyFileIntegrity(companyId: number, fileId: number) {
       // 📝 บันทึกประวัติลายนิ้วมือดิจิทัลของไฟล์ฉบับนี้ลงระบบ
       await this.prisma.logDocumentTrace.create({
         data: {
-          companyId,
-          fileHash,
-          originalFileId: fileId,
-          downloadedById: userId,
-        }
-      });
+                fileHash: fileHash,
+                company: { connect: { id: companyId } },
+                originalFile: { connect: { id: fileId } },
+                downloadedBy: { connect: { id: userId } } // 👈 ใส่ตรงๆ แบบนี้เลย ไม่ต้องมีเงื่อนไข if ครอบครับ
+              }
+        });
 
       return {
         fileStream: new StreamableFile(finalBuffer),
@@ -1150,12 +1149,12 @@ async verifyFileIntegrity(companyId: number, fileId: number) {
       // 📝 บันทึกประวัติว่าใครโหลดไฟล์ "ต้นฉบับ" (Hash นี้) ออกไป เพื่อใช้ในระบบ Audit Log
       await this.prisma.logDocumentTrace.create({
         data: {
-          companyId,
-          fileHash,
-          originalFileId: fileId,
-          downloadedById: userId,
-        }
-      });
+                fileHash: fileHash,
+                company: { connect: { id: companyId } },
+                originalFile: { connect: { id: fileId } },
+                downloadedBy: { connect: { id: userId } } // 👈 ใส่ตรงๆ แบบนี้เลย ไม่ต้องมีเงื่อนไข if ครอบครับ
+              }
+        });
       
       return {
         fileStream: new StreamableFile(originalBuffer),

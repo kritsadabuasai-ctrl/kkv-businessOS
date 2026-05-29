@@ -224,7 +224,7 @@ export class DocFileController {
     @Body('newPassword') newPassword?: string,
   ) {
     const companyId = req.user.companyId;
-    const userId = req.user.userId;
+    const userId = Number(req.user.userId || req.user.sub || req.user.id);
     const ipAddress = req.ip || req.connection.remoteAddress;
     const userAgent = req.headers['user-agent'];
 
