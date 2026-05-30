@@ -116,6 +116,7 @@ async function main() {
   await seedProductStatuses();
   await seedProductSalesTypes();
   await seedProductTypes();
+  await seedFileExtensions();
   await seedEmploymentStatuses();
   await seedSystemEnums();
   await seedRemainingEnums();
@@ -125,6 +126,7 @@ async function main() {
   await seedSex();
   await seedWorkflowBusinessTypes(prisma);
   await seedAdditionalEnums();
+  
   
   // =========================================================
   // 2. สร้าง MODULES
