@@ -1,4 +1,4 @@
-import { IsInt, IsOptional, IsString, IsBoolean } from 'class-validator';
+import { IsInt, IsOptional, IsString, IsBoolean ,IsNumber ,IsNotEmpty } from 'class-validator';
 
 export class CreateFileVersionDto {
   @IsInt()
@@ -10,7 +10,10 @@ export class CreateFileVersionDto {
   @IsString()
   url!: string;
 
-  size: any; // Using any for BigInt compatibility in DTOs
+  // 🌟 เปลี่ยนกลับมาเป็น fileSize ให้เหมือนเดิม
+  @IsNumber()
+  @IsNotEmpty()
+  fileSize!: number;
 
   @IsOptional()
   @IsString()
