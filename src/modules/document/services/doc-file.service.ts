@@ -447,24 +447,31 @@ export class DocFileService {
     return newVersion;
   }
 
-  // ==========================================
+// ==========================================
   // 3. Callback เมื่อ Workflow "อนุมัติ" (Approved)
   // ==========================================
   async approveFileVersion(companyId: number, fileId: number, versionId: number) {
+    // 1. ดึงข้อมูลไฟล์แม่มาเช็กก่อนว่าเคย Sync AI ไว้หรือไม่
+    const docFile = await this.prisma.docFile.findFirst({
+      where: { id: fileId, companyId }
+    });
+
+    if (!docFile) throw new Error('ไม่พบเอกสารนี้ในระบบ');
+
     return this.prisma.$transaction(async (tx) => {
-      // 1. เคลียร์สถานะ isCurrent ของทุกเวอร์ชันเก่าทิ้ง
+      // 2. เคลียร์สถานะ isCurrent ของทุกเวอร์ชันเก่าทิ้ง
       await tx.docFileVersion.updateMany({
         where: { fileId },
         data: { isCurrent: false }
       });
 
-      // 2. ดันเวอร์ชันที่ผ่านการอนุมัติให้เป็นของจริง
+      // 3. ดันเวอร์ชันที่ผ่านการอนุมัติให้เป็นของจริง
       const approvedVersion = await tx.docFileVersion.update({
         where: { id: versionId },
         data: { isCurrent: true, changeLog: 'Approved and applied' }
       });
 
-      // 3. อัปเดตข้อมูลไฟล์หลักให้ตรงกับเวอร์ชันใหม่ และปลดล็อก Workflow
+      // 4. อัปเดตข้อมูลไฟล์หลักให้ตรงกับเวอร์ชันใหม่ และปลดล็อก Workflow
       await tx.docFile.update({
         where: { id: fileId },
         data: {
@@ -473,6 +480,27 @@ export class DocFileService {
           wfRequestId: null // ปลดล็อก
         }
       });
+
+      // 🌟 5. Auto-Sync เข้า AI Knowledge Base (เฉพาะกรณีที่เคย Sync แล้ว)
+      if (docFile.knowledgeBaseId) {
+        await tx.intAiBatchJob.create({
+          data: {
+            companyId,
+            jobType: 'KNOWLEDGE_UPLOAD_OCR', 
+            status: 'PENDING',
+            totalItems: 1,
+            payload: {
+              fileUrl: approvedVersion.url, 
+              fileName: docFile.fileName,
+              mimeType: approvedVersion.mimeType || docFile.fileExtension, 
+              fileSize: Number(approvedVersion.size),
+              topic: docFile.fileName,
+              docFileId: docFile.id,
+              existingKnowledgeBaseId: docFile.knowledgeBaseId // 👈 ส่ง ID เดิมไปให้ Worker ทราบว่าจะต้องอัปเดตทับข้อมูลไหน
+            },
+          }
+        });
+      }
 
       return approvedVersion;
     });
