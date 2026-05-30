@@ -5964,6 +5964,9 @@ model DocFile {
   /// ลิงก์ GCS ของเวอร์ชันล่าสุด    
   currentUrl    String         
 
+  /// 🌟 เพิ่มฟิลด์นี้: สำหรับเก็บเลขที่เอกสารที่ Generate จาก CfgRunningFormat
+  documentNo    String?        @db.VarChar(100)
+
   /// 🚨 Future Feature: Data Loss Prevention (DLP) มีเลขบัตร ปชช, บัตรเครดิต หรือไม่
   isSensitiveData    Boolean  @default(false) 
   /// ระดับความความลับ (0-100 ประเมินโดย AI)
@@ -6009,7 +6012,7 @@ model DocFile {
   createdAt     DateTime       @default(now())
   updatedAt     DateTime       @updatedAt
 
-  @@index([companyId, folderId])
+  @@index([companyId, documentNo, folderId])
   @@map("doc_files")
 }
 
@@ -6086,6 +6089,15 @@ model DocFileVersion {
 
   /// 🌟 เพิ่มฟิลด์นี้เข้าไป เพื่อใช้บอกว่าเวอร์ชันไหนคือไฟล์ใช้งานจริงปัจจุบัน
   isCurrent      Boolean  @default(false)
+
+  /// 🔒 เก็บค่า Hash (เช่น SHA-256) เพื่อยืนยันความถูกต้องของไฟล์ (Data Integrity)
+  fileHash     String?  @db.VarChar(255)
+
+  /// 📄 ชื่อไฟล์ที่ถูกอัปโหลดเข้ามาในเวอร์ชันนี้
+  originalFileName String? @db.VarChar(255)
+
+  /// 🤖 บอกว่าข้อความของเวอร์ชันนี้ ถูก Sync ไปอัปเดตใน AI Knowledge Base หรือยัง
+  isAiSynced   Boolean  @default(false)
   
   uploadedById Int
   uploadedBy   SecUser  @relation(fields: [uploadedById], references: [id])

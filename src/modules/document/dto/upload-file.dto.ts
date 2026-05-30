@@ -46,6 +46,11 @@ export class UploadFileDto {
   @IsString()
   changeLog?: string;
 
+  // 🌟 [เพิ่มใหม่] รับรหัสประเภทเอกสารจากหน้าบ้าน นำไปใช้หา Code Running
+  @IsOptional()
+  @IsString()
+  docCode?: string;
+
   // 🌟 [เพิ่มใหม่] สำหรับบันทึกข้อมูล Metadata ตอนเริ่มต้น
   @IsOptional()
   @IsArray()
@@ -56,6 +61,10 @@ export class UploadFileDto {
   @IsOptional()
   @IsDateString()
   autoDeleteAt?: string; // รับค่าเป็น ISO Date String เช่น "2026-12-31"
+
+  @IsOptional()
+  @IsString()
+  documentNo?: string;
 
   @IsOptional()
   @IsString()

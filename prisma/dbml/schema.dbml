@@ -1300,7 +1300,7 @@ Table wf_requests {
   actions wf_actions [not null]
   orderItem com_order_items [note: 'เป็น Optional เพราะไม่ใช่ทุก Workflow จะมาจาก OrderItem']
   createdAt DateTime [default: `now()`, not null, note: 'วันและเวลาที่สร้างคำขอ']
-  updatedAt DateTime [not null, note: 'วันและเวลาที่มีการปรับปรุงข้อมูลล่าสุด (เช่น เมื่อมีการเปลี่ยนสถานะหรือเปลี่ยนโหนด)']
+  updatedAt DateTime [not null, note: 'วันและเวลาที่มีการปรับปรุงข้���มูลล่าสุด (เช่น เมื่อมีการเปลี่ยนสถานะหรือเปลี่ยนโหนด)']
 
   Note: 'ตารางเก็บบันทึกรายการคำขออนุมัติและสถานะการดำเนินการในกระบวนการ Workflow'
 }
@@ -1582,7 +1582,7 @@ Table com_product_images {
   parent com_product_images
   children com_product_images [not null]
   url String [not null, note: 'ที่อยู่เต็มของไฟล์สำหรับเรียกใช้งาน']
-  variantId Int [note: '(Option) เชื่อมรูปภาพเข้ากับ รุ่นย่���ยของสินค้า (Variant) เช่น รูปนี้สำหรับเสื้อสีแดงเท่านั้น']
+  variantId Int [note: '(Option) เชื่อมรูปภาพเข้ากับ รุ่นย่อยของสินค้า (Variant) เช่น รูปนี้สำหรับเสื้อสีแดงเท่านั้น']
   variant com_products
   displayName String [note: 'ชื่อสำหรับแสดงผล (ตั้งเองได้)']
   fileId String [note: 'ไอดีเฉพาะของไฟล์จากระบบจัดเก็บ (เช่น ID จาก Google Drive)']
@@ -2134,7 +2134,7 @@ Table com_return_items {
   orderItemId Int [not null, note: 'อ้างอิงว่าคืนรายการไหนใน Order เดิม']
   orderItem com_order_items [not null]
   qty Int [not null, note: 'จำนวนที่เคลม']
-  targetProductId Int [note: 'กรณี Exchange: ต้องการเปลี่ยนเป็นสินค้าตัวไหน (เช่น เปลี่ยนจาก Size S -> M)']
+  targetProductId Int [note: 'กรณี Exchange: ต้องการเ��ลี่ยนเป็นสินค้าตัวไหน (เช่น เปลี่ยนจาก Size S -> M)']
   targetProduct com_products
   condition String [note: 'สภาพสินค้าที่ได้รับ (เช่น "กล่องบุบ", "มีรอยขีดข่วน")']
 
@@ -2761,9 +2761,9 @@ Table cfg_rounding_ranges {
   minVal Decimal [not null, note: 'ค่าต่ำสุดของช่วงข้อมูลที่ต้องการตรวจสอบ (รวมค่านี้)']
   maxVal Decimal [not null, note: 'ค่าสูงสุดของช่วงข้อมูลที่ต้องการตรวจสอบ (รวมค่านี้)']
   result Decimal [not null, note: 'ค่าที่จะให้นำไปใช้หลังจากผ่านเงื่อนไขในช่วงนี้']
-  sortOrder Int [not null, default: 0, note: 'ลำดับการตรวจสอบข้อมูล (ใช้ในกรณีที่มีช่วงข้อมูลซ้อนทับกัน เพื่อระบุว่าจะให้เช็คเงื่อนไขใดก่อน)']
+  sortOrder Int [not null, default: 0, note: 'ลำดับการตรวจสอบข้อมูล (ใช้ในกรณีที่มีช่วงข้อมูลซ้อนทั��กัน เพื่อระบุว่าจะให้เช็คเงื่อนไขใดก่อน)']
 
-  Note: 'ทำหน้าที่เก็บ รายละเอียดเงื่อนไขในช่วงตัวเลข (Range Logic) เพื่อกำหนดว่าถ้าตัวเลขตกอยู่ในช่วงที่ระบุ จะให้ปัดเศษเป็นค่าใด โดยทำงานเป็นตารางลูก (Child Table) ที่เชื่อมโยงกับ CfgRoundingRule เพื่อให้การปัดเศษมีความยืดหยุ่นสูงมาก เช่น การปัด���ศษสตางค์แบบขั้นบันได'
+  Note: 'ทำหน้าที่เก็บ รายละเอียดเงื่อนไขในช่วงตัวเลข (Range Logic) เพื่อกำหนดว่าถ้าตัวเลขตกอยู่ในช่วงที่ระบุ จะให้ปัดเศษเป็นค่าใด โดยทำงานเป็นตารางลูก (Child Table) ที่เชื่อมโยงกับ CfgRoundingRule เพื่อให้การปัดเศษมีความยืดหยุ่นสูงมาก เช่น การปัดเศษสตางค์แบบขั้นบันได'
 }
 
 Table hr_leave_types {
@@ -3481,6 +3481,7 @@ Table doc_files {
   fileExtension String [not null]
   currentSize BigInt [not null, note: 'ขนาดไฟล์ของเวอร์ชันล่าสุด']
   currentUrl String [not null, note: 'ลิงก์ GCS ของเวอร์ชันล่าสุด    ']
+  documentNo String [note: '🌟 เพิ่มฟิลด์นี้: สำหรับเก็บเลขที่เอกสารที่ Generate จาก CfgRunningFormat']
   isSensitiveData Boolean [not null, default: false, note: '🚨 Future Feature: Data Loss Prevention (DLP) มีเลขบัตร ปชช, บัตรเครดิต หรือไม่']
   sensitivityScore Int [not null, default: 0, note: 'ระดับความความลับ (0-100 ประเมินโดย AI)']
   sarabanRecord DocSarabanRecord
@@ -3548,6 +3549,9 @@ Table doc_file_versions {
   mimeType String [note: 'เช่น application/pdf']
   changeLog String [note: 'บันทึกว่าแก้ไขอะไรในเวอร์ชันนี้ ']
   isCurrent Boolean [not null, default: false, note: '🌟 เพิ่มฟิลด์นี้เข้าไป เพื่อใช้บอกว่าเวอร์ชันไหนคือไฟล์ใช้งานจริงปัจจุบัน']
+  fileHash String [note: '🔒 เก็บค่า Hash (เช่น SHA-256) เพื่อยืนยันความถูกต้องของไฟล์ (Data Integrity)']
+  originalFileName String [note: '📄 ชื่อไฟล์ที่ถูกอัปโหลดเข้ามาในเวอร์ชันนี้']
+  isAiSynced Boolean [not null, default: false, note: '🤖 บอกว่าข้อความของเวอร์ชันนี้ ถูก Sync ไปอัปเดตใน AI Knowledge Base หรือยัง']
   uploadedById Int [not null]
   uploadedBy sec_users [not null]
   createdAt DateTime [default: `now()`, not null]
@@ -3677,7 +3681,7 @@ Table doc_signatures {
   signedAt DateTime [default: `now()`, not null, note: '🔐 ข้อมูลเพื่อความปลอดภัยทางกฎหมาย (e-Signature Compliance)']
   ipAddress String
   userAgent String
-  fileHashAtSigning String [note: '🛡️ ระบบป้องกันการแก้ไขไฟล์ (Data Integrity) เก็บ Hash ของไฟล์ ณ จังหวะที่เซ็น ถ้าไฟล์ถูกแก้หลังจากนี้ Hash จะไม่ตรง']
+  fileHashAtSigning String [note: '🛡️ ระบบป้องกันการแก้ไขไ��ล์ (Data Integrity) เก็บ Hash ของไฟล์ ณ จังหวะที่เซ็น ถ้าไฟล์ถูกแก้หลังจากนี้ Hash จะไม่ตรง']
   digitalCertificateId String [note: '🔒 ลายเซ็นแบบดิจิทัล (ถ้ามีระบบ PKI/Certificate ในอนาคต)']
 
   Note: '📑 ตารางเก็บข้อมูลลายเซ็นที่เกิดขึ้นจริง'

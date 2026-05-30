@@ -1940,6 +1940,7 @@ erDiagram
   String fileExtension
   BigInt currentSize
   String currentUrl
+  String documentNo "nullable"
   Boolean isSensitiveData
   Int sensitivityScore
   Boolean isWatermarkEnabled
@@ -1987,6 +1988,9 @@ erDiagram
   String mimeType "nullable"
   String changeLog "nullable"
   Boolean isCurrent
+  String fileHash "nullable"
+  String originalFileName "nullable"
+  Boolean isAiSynced
   Int uploadedById FK
   DateTime createdAt
 }
@@ -5907,6 +5911,7 @@ Properties as follows:
 - `fileExtension`:
 - `currentSize`: ขนาดไฟล์ของเวอร์ชันล่าสุด
 - `currentUrl`: ลิงก์ GCS ของเวอร์ชันล่าสุด
+- `documentNo`: 🌟 เพิ่มฟิลด์นี้: สำหรับเก็บเลขที่เอกสารที่ Generate จาก CfgRunningFormat
 - `isSensitiveData`: 🚨 Future Feature: Data Loss Prevention (DLP) มีเลขบัตร ปชช, บัตรเครดิต หรือไม่
 - `sensitivityScore`: ระดับความความลับ (0-100 ประเมินโดย AI)
 - `isWatermarkEnabled`: 💧 Future Feature: Dynamic Watermark
@@ -5962,6 +5967,9 @@ Properties as follows:
 - `mimeType`: เช่น application/pdf
 - `changeLog`: บันทึกว่าแก้ไขอะไรในเวอร์ชันนี้
 - `isCurrent`: 🌟 เพิ่มฟิลด์นี้เข้าไป เพื่อใช้บอกว่าเวอร์ชันไหนคือไฟล์ใช้งานจริงปัจจุบัน
+- `fileHash`: 🔒 เก็บค่า Hash (เช่น SHA-256) เพื่อยืนยันความถูกต้องของไฟล์ (Data Integrity)
+- `originalFileName`: 📄 ชื่อไฟล์ที่ถูกอัปโหลดเข้ามาในเวอร์ชันนี้
+- `isAiSynced`: 🤖 บอกว่าข้อความของเวอร์ชันนี้ ถูก Sync ไปอัปเดตใน AI Knowledge Base หรือยัง
 - `uploadedById`:
 - `createdAt`:
 

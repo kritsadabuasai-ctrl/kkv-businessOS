@@ -1,21 +1,43 @@
-import { IsNotEmpty, IsNumber, IsOptional, IsString } from 'class-validator';
+import { IsInt, IsOptional, IsString, IsBoolean } from 'class-validator';
 
 export class CreateFileVersionDto {
+  @IsInt()
+  fileId!: number;
+
+  @IsInt()
+  companyId!: number;
+
   @IsString()
-  @IsNotEmpty()
   url!: string;
 
-  @IsNumber()
-  @IsNotEmpty()
-  fileSize!: number;
+  size: any; // Using any for BigInt compatibility in DTOs
 
+  @IsOptional()
   @IsString()
-  @IsNotEmpty()
-  changeLog!: string; // 🌟 บังคับใส่เพื่อให้รู้ว่าเวอร์ชันนี้แก้เรื่องอะไร
+  mimeType?: string;
 
-  // 🔍 [Future Feature] รองรับการเก็บข้อความที่สกัดจาก OCR/AI เพื่อทำ Full-Text Search
+  @IsOptional()
+  @IsString()
+  changeLog?: string;
+
   @IsOptional()
   @IsString()
   extractedText?: string;
 
+  // 🌟 ฟิลด์ใหม่ที่เพิ่มเข้ามาตาม Schema ล่าสุด
+  @IsOptional()
+  @IsBoolean()
+  isCurrent?: boolean;
+
+  @IsOptional()
+  @IsString()
+  fileHash?: string;
+
+  @IsOptional()
+  @IsString()
+  originalFileName?: string;
+
+  @IsOptional()
+  @IsBoolean()
+  isAiSynced?: boolean;
 }

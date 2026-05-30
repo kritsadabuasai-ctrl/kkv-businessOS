@@ -2,6 +2,7 @@ import { Injectable, NotFoundException, BadRequestException, InternalServerError
 import { PrismaService } from '../../../prisma/prisma.service'; 
 import { UploadFileDto } from '../dto/upload-file.dto';
 import { UpdateFileAccessDto } from '../dto/update-file-access.dto';
+import { CreateFileVersionDto } from '../dto/create-file-version.dto';
 import { StorageService } from '../../sys/storage/storage.service';
 import { CreateShareLinkDto } from '../dto/create-share-link.dto';
 import { GoogleGenerativeAI } from '@google/generative-ai';
@@ -10,7 +11,9 @@ import { UnlockFileDto } from '../dto/unlock-file.dto';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { CreateSignatureRequestDto } from '../dto/signature-request.dto';
 import { WfRequestService } from '../../workflow/requests/wf-request.service'; // ตรวจสอบ Path ให้ตรงกับโปรเจกต์คุณด้วยนะครับ
-import { AiQuotasService } from '../../int/ai-quotas/ai-quotas.service'                        
+import { AiQuotasService } from '../../int/ai-quotas/ai-quotas.service'      
+
+import { RunningNumbersService } from '../../cfg/running-numbers/running-numbers.service'   //       /running-numbers/running-numbers.service'; // สมมติว่าคุณมี Service นี้สำหรับจัดการเลขที่เอกสาร
 
 import { StreamableFile } from '@nestjs/common';
 import axios from 'axios';
@@ -28,7 +31,8 @@ export class DocFileService {
     private readonly storageService: StorageService ,
     @Inject(forwardRef(() => WfRequestService))
     private readonly wfRequestService: WfRequestService ,
-    private readonly aiQuotasService: AiQuotasService
+    private readonly aiQuotasService: AiQuotasService,
+    private readonly runningNumbersService: RunningNumbersService
   ) {}
 
 
@@ -269,65 +273,63 @@ export class DocFileService {
   }
 
 // ==========================================
-  // 1. บันทึกข้อมูลไฟล์ (พร้อมระบบ Auto-Rename และ Auto-Trigger Workflow)
+  // 1. บันทึกไฟล์ใหม่ครั้งแรก (V1)
   // ==========================================
   async createFileRecord(companyId: number, uploadedById: number, dto: UploadFileDto) {
+    
+    // 🟢 1. ให้ RunningNumbersService จัดการหา Format และรันเลขให้เลย (มีระบบ Fallback ในตัว)
+    const docCode = dto.docCode || 'GENERAL_DOC';
+    const generatedDocumentNo = await this.runningNumbersService.generateNextNumber(companyId, docCode);
 
+    // 🔒 2. จัดการรหัสผ่านไฟล์
     let hashedFilePassword: string | null = null; 
-      
     if (dto.filePassword) {
+      const bcrypt = require('bcrypt');
       hashedFilePassword = await bcrypt.hash(dto.filePassword, 10);
     }
 
-    // 🌟 [NEW LOGIC] ระบบ Auto-Rename เปลี่ยนชื่อไฟล์อัตโนมัติหากซ้ำในโฟลเดอร์เดียวกัน
+    // 📝 3. ระบบ Auto-Rename เปลี่ยนชื่อไฟล์อัตโนมัติหากซ้ำ
     let finalFileName = dto.fileName;
     let counter = 1;
-
-    // แยกชื่อหลักและนามสกุลไฟล์ออกจากกัน เพื่อให้แทรกตัวเลขได้ถูกต้อง เช่น report(1).pdf
     const lastDotIndex = dto.fileName.lastIndexOf('.');
     let baseName = dto.fileName;
     let ext = '';
     
     if (lastDotIndex !== -1 && lastDotIndex !== 0) {
       baseName = dto.fileName.substring(0, lastDotIndex);
-      ext = dto.fileName.substring(lastDotIndex); // จะได้นามสกุลติดจุดมาด้วย เช่น ".pdf"
+      ext = dto.fileName.substring(lastDotIndex); 
     }
 
-    // วนลูปตรวจสอบชื่อซ้ำในโฟลเดอร์เดียวกัน
     while (true) {
       const existingFile = await this.prisma.docFile.findFirst({
-        where: {
-          companyId: companyId,
-          folderId: dto.folderId || null, // ตรวจสอบในโฟลเดอร์เดียวกัน (หรือ Root)
-          fileName: finalFileName
-        }
+        where: { companyId, folderId: dto.folderId || null, fileName: finalFileName }
       });
-
-      if (!existingFile) {
-        break; // ชื่อนี้ว่างแล้ว ออกจากลูปได้เลย
-      }
-
-      // ถ้าชื่อซ้ำ ให้รันเลขต่อไปเรื่อยๆ
+      if (!existingFile) break; 
       finalFileName = `${baseName} (${counter})${ext}`;
       counter++;
     }
 
-    // 1. บันทึกไฟล์ลงระบบตามปกติ
+    // 💾 4. บันทึกข้อมูลลง Database ด้วย Transaction
     const newDoc = await this.prisma.$transaction(async (tx) => {
+      // สร้าง DocFile (เอกสารแม่)
       const doc = await tx.docFile.create({
         data: {
           companyId,
           folderId: dto.folderId,
-          fileName: finalFileName, // 👈 ใช้ชื่อไฟล์ที่ผ่านการรันเลข Auto-Rename แล้ว
+          fileName: finalFileName, 
           fileExtension: dto.fileExtension,
           currentSize: BigInt(dto.fileSize),
           currentUrl: dto.url,
+          
+          documentNo: generatedDocumentNo, // 👈 ใช้เลขที่ระบบ Gen ออกมาให้
+          
           uploadedById,
           autoDeleteAt: dto.autoDeleteAt ? new Date(dto.autoDeleteAt) : null,
           filePassword: hashedFilePassword, 
         },
       });
 
+      // สร้าง Version 1
       await tx.docFileVersion.create({
         data: {
           companyId,
@@ -338,75 +340,167 @@ export class DocFileService {
           mimeType: dto.fileExtension,
           uploadedById,
           changeLog: 'Initial upload',
+          isCurrent: true, 
+          originalFileName: dto.fileName,
         },
       });
 
       if (dto.metadata && dto.metadata.length > 0) {
         await tx.docFileMetadata.createMany({
           data: dto.metadata.map((m) => ({
-            companyId,
-            fileId: doc.id,
-            key: m.key,
-            value: m.value,
+            companyId, fileId: doc.id, key: m.key, value: m.value,
           })),
         });
       }
-
       return doc;
     });
 
-    // =========================================================
-    // 🌟 [NEW LOGIC] ระบบ Auto-Trigger Workflow ตามการตั้งค่า
-    // =========================================================
+    // 🌟 5. ระบบ Auto-Trigger Workflow
     try {
-      // ค้นหาว่าโฟลเดอร์นี้ หรือโฟลเดอร์แม่ มีการตั้งค่า Workflow อัปโหลดไว้หรือไม่
       let targetWorkflowId = await this.getInheritedWorkflow(dto.folderId ?? null, companyId, 'UPLOAD');
-
-      // ถ้าไม่มีที่โฟลเดอร์ ให้ไปค้นหาการตั้งค่าส่วนกลางของบริษัท
       if (!targetWorkflowId) {
         const mapping = await this.prisma.wfModuleMapping.findFirst({
-          where: { companyId: companyId, moduleCode: 'DOC_UPLOAD', isActive: true }
+          where: { companyId, moduleCode: 'DOC_UPLOAD', isActive: true }
         });
         if (mapping) targetWorkflowId = mapping.workflowId;
       }
 
-      // 🚀 ถ้ามีการตั้งค่า Workflow ไว้ ให้เตะเข้าสายอนุมัติทันที!
       if (targetWorkflowId) {
-        console.log(`[Auto-Workflow] พบการตั้งค่า Workflow ID ${targetWorkflowId} สำหรับไฟล์ ${newDoc.id} กำลังส่งเรื่องอัตโนมัติ...`);
-
-        // 🌟 Fix: ระบุ Type เป็น any ป้องกัน TS2339 Error
         const request: any = await this.wfRequestService.create(companyId, uploadedById, {
           moduleCode: 'DOC_UPLOAD',
           workflowId: targetWorkflowId,
-          businessId: String(newDoc.id),
-          topic: `ขออนุมัติเอกสาร: ${newDoc.fileName}`, 
+          businessId: String(newDoc.id), 
+          topic: `ขออนุมัติเอกสารใหม่: ${newDoc.fileName}`, 
         } as any);
 
-        // อัปเดต wfRequestId กลับไปที่ DocFile ให้รู้ว่าไฟล์นี้ติดสถานะรออนุมัติ
         await this.prisma.docFile.update({
           where: { id: newDoc.id },
           data: { wfRequestId: request.id }
         });
 
-        // ส่ง Response กลับไปบอกหน้าบ้านว่า "อัปโหลดแล้ว และส่งเข้า Workflow แล้วนะ"
-        return { 
-          ...newDoc, 
-          wfRequestId: request.id, 
-          isPendingApproval: true, 
-          message: 'อัปโหลดและส่งเข้าสู่กระบวนการอนุมัติอัตโนมัติเรียบร้อยแล้ว' 
-        };
+        return { ...newDoc, wfRequestId: request.id, isPendingApproval: true, message: 'ส่งเข้าสู่กระบวนการอนุมัติแล้ว' };
       }
     } catch (error: any) {
-      console.error(`[Auto-Workflow Error] ไม่สามารถส่งไฟล์ ${newDoc.id} เข้า Workflow อัตโนมัติได้:`, error.message);
-      // ถึง Workflow จะมีปัญหา (เช่น ตั้งค่า Node ผิด) เราก็ปล่อยให้ไฟล์บันทึกสำเร็จไปก่อน
+      console.error(`[Auto-Workflow Error]:`, error.message);
     }
-
-    // 🚶‍♂️ ถ้าไม่มีการกำหนด Workflow ระบบก็จะไม่วิ่ง และคืนค่ากลับไปปกติ (พร้อมใช้งานทันที)
-    return {
-      ...newDoc,
-      message: 'อัปโหลดไฟล์สำเร็จ (ไม่มีการตั้งค่าสายอนุมัติ)'
-    };
+    
+    return { ...newDoc, message: 'อัปโหลดไฟล์สำเร็จ' };
   }
+
+  // ==========================================
+  // 2. ขอแก้ไข/อัปโหลดไฟล์เวอร์ชันใหม่ (V2, V3...) โดยรักษาสถานะ Pending ไว้
+  // ==========================================
+  async requestNewVersion(companyId: number, fileId: number, uploadedById: number, dto: UploadFileDto) {
+    const docFile = await this.prisma.docFile.findFirst({
+      where: { id: fileId, companyId },
+      include: { versions: { orderBy: { version: 'desc' }, take: 1 } }
+    });
+
+    if (!docFile) throw new Error('ไม่พบเอกสารนี้ในระบบ');
+    const nextVersion = docFile.versions.length > 0 ? docFile.versions[0].version + 1 : 2;
+
+    // บันทึก V ใหม่ แต่ยังไม่ให้สิทธิ์ใช้งานจริง (isCurrent: false)
+    const newVersion = await this.prisma.docFileVersion.create({
+        data: {
+          companyId,
+          fileId: docFile.id,
+          version: nextVersion,
+          url: dto.url,
+          size: BigInt(dto.fileSize),
+          mimeType: dto.fileExtension,
+          uploadedById,
+          changeLog: 'Requested approval for update',
+          isCurrent: false, // 🛑 ป้องกันไว้ก่อน รออนุมัติ
+          originalFileName: dto.fileName,
+        }
+    });
+
+    // 🌟 ส่ง V ใหม่เข้า Workflow
+    try {
+      let targetWorkflowId = await this.getInheritedWorkflow(docFile.folderId ?? null, companyId, 'UPDATE');
+      if (!targetWorkflowId) {
+        const mapping = await this.prisma.wfModuleMapping.findFirst({
+          where: { companyId, moduleCode: 'DOC_UPDATE', isActive: true }
+        });
+        if (mapping) targetWorkflowId = mapping.workflowId;
+      }
+
+      if (targetWorkflowId) {
+        const request: any = await this.wfRequestService.create(companyId, uploadedById, {
+          moduleCode: 'DOC_UPDATE',
+          workflowId: targetWorkflowId,
+          businessId: String(newVersion.id), // 👈 ส่ง ID ของเวอร์ชันให้ Workflow รู้ว่ากำลังอนุมัติไฟล์ไหน
+          topic: `ขออนุมัติอัปเดตเอกสาร: ${docFile.fileName} (V${nextVersion})`, 
+        } as any);
+
+        // ล็อกไฟล์หลักไว้ว่ากำลังอยู่ระหว่างขออนุมัติ
+        await this.prisma.docFile.update({
+          where: { id: docFile.id },
+          data: { wfRequestId: request.id }
+        });
+
+        return { ...newVersion, wfRequestId: request.id, isPendingApproval: true };
+      }
+    } catch (error: any) {
+      console.error(`[Auto-Workflow Error]:`, error.message);
+    }
+    return newVersion;
+  }
+
+  // ==========================================
+  // 3. Callback เมื่อ Workflow "อนุมัติ" (Approved)
+  // ==========================================
+  async approveFileVersion(companyId: number, fileId: number, versionId: number) {
+    return this.prisma.$transaction(async (tx) => {
+      // 1. เคลียร์สถานะ isCurrent ของทุกเวอร์ชันเก่าทิ้ง
+      await tx.docFileVersion.updateMany({
+        where: { fileId },
+        data: { isCurrent: false }
+      });
+
+      // 2. ดันเวอร์ชันที่ผ่านการอนุมัติให้เป็นของจริง
+      const approvedVersion = await tx.docFileVersion.update({
+        where: { id: versionId },
+        data: { isCurrent: true, changeLog: 'Approved and applied' }
+      });
+
+      // 3. อัปเดตข้อมูลไฟล์หลักให้ตรงกับเวอร์ชันใหม่ และปลดล็อก Workflow
+      await tx.docFile.update({
+        where: { id: fileId },
+        data: {
+          currentSize: approvedVersion.size,
+          currentUrl: approvedVersion.url,
+          wfRequestId: null // ปลดล็อก
+        }
+      });
+
+      return approvedVersion;
+    });
+  }
+
+
+  // ==========================================
+  // 4. Callback เมื่อ Workflow "ตีกลับ/ไม่อนุมัติ" (Rejected)
+  // ==========================================
+  async rejectFileVersion(companyId: number, fileId: number, versionId: number) {
+    return this.prisma.$transaction(async (tx) => {
+      // 1. เขียนหมายเหตุลงในเวอร์ชันที่โดนตีตก (ไฟล์เก่ายังคง isCurrent = true ตามเดิม)
+      const rejectedVersion = await tx.docFileVersion.update({
+        where: { id: versionId },
+        data: { changeLog: 'Rejected via Workflow' }
+      });
+
+      // 2. ปลดล็อกไฟล์หลัก ให้พร้อมสำหรับการทำรายการอื่นๆ ถัดไป
+      await tx.docFile.update({
+        where: { id: fileId },
+        data: { wfRequestId: null } // ปลดล็อก
+      });
+
+      return rejectedVersion;
+    });
+  }
+
+ 
 
 
   // 1. สร้างคำขอเซ็นเอกสาร
@@ -2102,8 +2196,8 @@ async downloadOriginalFile(companyId: number, fileId: number, userId: number, ro
  // ==========================================
   // 🔍 Helper: ฟังก์ชันปีนหา Workflow จากแฟ้มแม่ (Folder Inheritance)
   // ==========================================
-  // 🌟 เพิ่มไทป์ 'ACCESS' เข้าไป
-  private async getInheritedWorkflow(folderId: any, companyId: number, type: 'UPLOAD' | 'DELETE' | 'ACCESS'): Promise<number | null> {
+  // 🌟 เพิ่มไทป์ 'ACCESS' และ 'UPDATE' เข้าไป
+  private async getInheritedWorkflow(folderId: any, companyId: number, type: 'UPLOAD' | 'DELETE' | 'ACCESS' | 'UPDATE'): Promise<number | null> {
     if (!folderId) return null;
     
     let currentFolderId: number | null = Number(folderId);
