@@ -252,6 +252,42 @@ async overrideMetadata(companyId: number, data: any, userId: number) {
     return this.findByGroup('DOCUMENT_TYPE', companyId);
   }
 
+  // =========================================================
+  // 🛡️ Helper: เช็กว่านามสกุลไฟล์นี้เปิดใช้งานอยู่หรือไม่ (รองรับ Fallback)
+  // =========================================================
+  async checkActiveExtension(companyId: number, fileExt: string): Promise<boolean> {
+    // 1. หา Group ID ของ FILE_EXTENSION
+    const group = await this.prisma.cfgMasterGroup.findUnique({
+      where: { groupCode: 'FILE_EXTENSION' }
+    });
+    
+    if (!group || !group.isActive) return false; // ถ้ากลุ่มถูกปิด หรือไม่มี ถือว่าไม่อนุญาต
+
+    // 2. หานามสกุลไฟล์ของบริษัทตัวเองก่อน (Override)
+    let extData = await this.prisma.cfgMasterData.findFirst({
+      where: { 
+        masterGroupId: group.id,
+        code: fileExt,
+        companyId: companyId 
+      }
+    });
+
+    // 3. ถ้าบริษัทไม่ได้ตั้งค่าไว้ ให้ถอยไปหาค่ากลางของระบบ (Global)
+    if (!extData) {
+      extData = await this.prisma.cfgMasterData.findFirst({
+        where: { 
+          masterGroupId: group.id,
+          code: fileExt,
+          companyId: null 
+        }
+      });
+    }
+
+    // 4. ถ้าไม่เจอในระบบเลย หรือเจอแต่ถูกปิด (isActive = false) ให้ตอบ false ทันที
+    if (!extData) return false;
+    return extData.isActive;
+  }
+
   // ===========================================================================
   // ⚙️ ส่วนจัดการข้อมูล (CRUD เดิม)
   // ===========================================================================

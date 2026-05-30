@@ -1,30 +1,28 @@
-import { Module, BadRequestException, forwardRef } from '@nestjs/common'; // 🌟 1. เพิ่ม forwardRef
+import { Module, forwardRef } from '@nestjs/common'; 
 import { MulterModule } from '@nestjs/platform-express';
 import { UploadController } from './upload.controller';
 import { UploadService } from './upload.service';
 import { PrismaModule } from '../../../prisma/prisma.module'; 
 
-// 🌟 2. Import StorageModule (ไม่ใช่ StorageService)
 import { StorageModule } from '../../sys/storage/storage.module'; 
+
+// 🌟 1. Import MasterModule เพื่อเอามาใช้เช็กข้อมูล Database ใน Controller
+import { MasterModule } from '../../cfg/master/master.module'; // 👈 เช็ก Path ตรงนี้ให้ตรงกับของคุณนะครับ
 
 @Module({
   imports: [
     PrismaModule, 
-    // 🌟 3. เรียกใช้ StorageModule ด้วย forwardRef ป้องกันการชนกัน
     forwardRef(() => StorageModule), 
     
+    // 🌟 2. นำ MasterModule มาใส่ใน imports
+    MasterModule,
+    
     MulterModule.register({
-      limits: { fileSize: 50 * 1024 * 1024 },
-      fileFilter: (req, file, cb) => {
-        if (!file.originalname.match(/\.(jpg|jpeg|png|gif|pdf|doc|docx|xls|xlsx|txt)$/)) {
-          return cb(new BadRequestException('Only image/doc/text files allowed!'), false);
-        }
-        cb(null, true);
-      },
+      // 🌟 3. เหลือแค่จำกัดขนาดไฟล์ ไม่ต้องมี fileFilter แล้ว (หนีปัญหางูกินหาง)
+      limits: { fileSize: 50 * 1024 * 1024 }, 
     }),
   ],
   controllers: [UploadController],
-  // 🌟 4. ลบ StorageService ออกจาก providers ปล่อยให้มันดึงมาจาก StorageModule แทน
   providers: [UploadService], 
   exports: [UploadService],
 })

@@ -7,6 +7,9 @@ import { SubscriptionGuard } from '../../sec/auth/subscription.guard';
 import { UploadService } from './upload.service'; 
 import { StorageService } from '../../sys/storage/storage.service'; // ✅ Import StorageService (ปรับ Path ให้ตรงกับโปรเจกต์จริง)
 
+// 🌟 1. Import MasterDataService เข้ามาใช้งาน
+import { MasterDataService } from '../../cfg/master/data.service';
+
 @Controller('int/upload')
 @UseGuards(JwtAuthGuard, PermissionsGuard, SubscriptionGuard)
 export class UploadController {
@@ -16,10 +19,12 @@ export class UploadController {
     private readonly uploadService: UploadService,
     // 🌟 2. ครอบ StorageService ด้วย @Inject(forwardRef()) ตรงนี้ครับ!
     @Inject(forwardRef(() => StorageService))
-    private readonly storageService: StorageService // ✅ Inject เข้ามาใช้งาน
+    private readonly storageService: StorageService , // ✅ Inject เข้ามาใช้งาน
+    // 🌟 2. Inject MasterDataService เข้ามา (Controller ไม่เกิดงูกินหางแน่นอน)
+    private readonly masterDataService: MasterDataService
   ) {} 
 
-  @Post()
+ @Post()
   @RequirePermissions('media:create')
   @UseInterceptors(FileInterceptor('file'))
   async uploadFile(
@@ -28,6 +33,25 @@ export class UploadController {
     @Query('type') type: string
   ) {
     if (!file) throw new BadRequestException('File is required');
+
+    // =========================================================
+    // 🛡️ ด่านที่ 1: ดักเช็กนามสกุลไฟล์จาก Master Data (Database-Driven)
+    // =========================================================
+    // แยกนามสกุลไฟล์ออกมาและทำเป็นตัวพิมพ์ใหญ่ (เช่น pdf -> PDF)
+    const extMatch = file.originalname.match(/\.([^\.]+)$/);
+    const fileExt = extMatch ? extMatch[1].toUpperCase() : '';
+
+    if (!fileExt) {
+      throw new BadRequestException('ไฟล์ที่อัปโหลดไม่พบสกุลไฟล์ที่ถูกต้อง');
+    }
+
+    // 🌟 วิ่งไปถาม Database ว่าอนุญาตหรือไม่ (หาของบริษัทก่อน ถ้าไม่เจอหาของส่วนกลาง)
+    const isAllowed = await this.masterDataService.checkActiveExtension(req.user.companyId, fileExt);
+
+    if (!isAllowed) {
+      throw new BadRequestException(`ระบบไม่อนุญาตให้อัปโหลดไฟล์สกุล .${fileExt.toLowerCase()} กรุณาติดต่อผู้ดูแลระบบเพื่อเปิดสิทธิ์การใช้งาน`);
+    }
+    // =========================================================
 
     // ตรวจสอบว่าเป็นรูปภาพหรือไม่ (กรณี type เป็น cms-image)
     if (type === 'cms-image' && !file.mimetype.startsWith('image/')) {
@@ -41,28 +65,25 @@ export class UploadController {
 
     const moduleType = type || 'general';
 
-    // 🌟 1. นำไฟล์ขึ้น Google Cloud (ได้ URL กลับมา)
+    // 1. นำไฟล์ขึ้น Google Cloud (ได้ URL กลับมา)
     const fileUrl = await this.uploadService.saveToCloud(file, req.user.companyId, moduleType);
 
     try {
-      // 🌟 2. โยนให้ StorageService ตรวจสอบโควตา ตัดยอด และบันทึกลงสมุด (SysMedia)
-      // ถ้าโควตาเต็ม โค้ดบรรทัดนี้จะเด้ง Error (throw Exception) ไปเข้าบล็อก catch ทันที
+      // 2. โยนให้ StorageService ตรวจสอบโควตา ตัดยอด และบันทึกลงสมุด (SysMedia)
       await this.storageService.deductQuota(req.user.companyId, fileUrl, file.size, moduleType);
 
-      // 🌟 3. ถ้าตัดโควตาผ่านฉลุย ตอบกลับหน้าบ้านตามปกติ
+      // 3. ถ้าตัดโควตาผ่านฉลุย ตอบกลับหน้าบ้านตามปกติ
       return { 
         url: fileUrl,
         size: file.size,
         type: moduleType
       };
 
-    } catch (error) {
-      // 🚨 4. ROLLBACK: ถ้า Error (เช่น โควตาเต็ม หรือไฟล์ใหญ่เกิน)
-      // ต้องรีบสั่งลบไฟล์ขยะที่เพิ่งอัปโหลดขึ้น GCS ทิ้งทันที!
+    } catch (error : any) {
+      // 4. ROLLBACK: ถ้า Error (เช่น โควตาเต็ม)
       this.logger.warn(`โควตาเต็มหรือมีปัญหา ลบไฟล์ทิ้งจาก GCS: ${fileUrl}`);
       await this.uploadService.deleteFromCloud(fileUrl);
       
-      // แล้วค่อยโยน Error เดิมกลับไปฟ้องหน้าบ้าน (Frontend จะได้โชว์ Popup สีแดง)
       throw error; 
     }
   }

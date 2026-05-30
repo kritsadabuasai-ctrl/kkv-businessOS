@@ -2083,6 +2083,73 @@ async function seedProductStatuses() {
   console.log('✅ Product Statuses Seeded!');
 }
 
+async function seedFileExtensions() {
+  console.log('Seeding Allowed File Extensions...');
+
+  // 1. สร้างหัวกลุ่ม FILE_EXTENSION
+  const extGroup = await prisma.cfgMasterGroup.upsert({
+    where: { groupCode: 'FILE_EXTENSION' },
+    update: {},
+    create: {
+      groupCode: 'FILE_EXTENSION',
+      groupName: 'นามสกุลไฟล์ที่อนุญาตให้อัปโหลด',
+      description: 'จัดการนามสกุลไฟล์ที่สามารถอัปโหลดเข้าระบบได้',
+      isSystem: true,
+      isActive: true,
+    },
+  });
+
+  // 2. ข้อมูลนามสกุลไฟล์ Default ของระบบ (Global) jpg|jpeg|png|gif|pdf|doc|docx|xls|xlsx|txt
+  const extensions = [
+    // 🖼️ กลุ่มรูปภาพ (Images)
+    { code: 'JPG', name: 'JPEG Image' },
+    { code: 'JPEG', name: 'JPEG Image' },
+    { code: 'PNG', name: 'PNG Image' },
+    { code: 'GIF', name: 'GIF Image' },
+    
+    // 📄 กลุ่มเอกสารทั่วไป (Documents)
+    { code: 'PDF', name: 'PDF Document' },
+    { code: 'DOC', name: 'Word Document (Legacy)' },
+    { code: 'DOCX', name: 'Word Document' },
+    { code: 'TXT', name: 'Plain Text File' },
+    
+    // 📊 กลุ่มตารางคำนวณและข้อมูล (Spreadsheets & Data)
+    { code: 'XLS', name: 'Excel Spreadsheet (Legacy)' },
+    { code: 'XLSX', name: 'Excel Spreadsheet' },
+    { code: 'CSV', name: 'Comma-Separated Values' },
+    
+    // 📽️ กลุ่มไฟล์นำเสนอ (Presentations)
+    { code: 'PPT', name: 'PowerPoint Presentation (Legacy)' },
+    { code: 'PPTX', name: 'PowerPoint Presentation' },
+  ];
+
+  for (const ext of extensions) {
+    const existing = await prisma.cfgMasterData.findFirst({
+      where: {
+        masterGroupId: extGroup.id, 
+        code: ext.code,
+        companyId: null, // ของส่วนกลาง
+      },
+    });
+
+    if (!existing) {
+      await prisma.cfgMasterData.create({
+        data: {
+          masterGroupId: extGroup.id,
+          code: ext.code,
+          name: ext.name,
+          sortOrder: extensions.indexOf(ext) + 1,
+          companyId: null,
+          isActive: true, // ค่าเริ่มต้นคืออนุญาต
+          labels: {}
+        },
+      });
+    }
+  }
+
+  console.log('✅ File Extensions Seeded!');
+}
+
 async function seedProductSalesTypes() {
   console.log('Seeding Product Sales Types...');
 
